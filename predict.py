@@ -1,15 +1,23 @@
+import json
+import urllib.request
 import numpy as np
 import pandas as pd
 import streamlit as st
 from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 from sklearn.ensemble import RandomForestRegressor
 
 # Page Setup
 st.set_page_config(page_title="Real-Time House Price Predictor", page_icon="📍", layout="wide")
 st.title("📍 Real-Time House Price Predictor (OpenStreetMap)")
 
-# 1. Initialize OpenStreetMap Geocoder (No API Key Required)
-geolocator = Nominatim(user_agent="indian_house_price_predictor")
+# 1. Initialize OpenStreetMap Geocoder with a UNIQUE User-Agent
+@st.cache_resource
+def get_geolocator():
+    # Use a unique application name to avoid HTTP 429 rate limits
+    return Nominatim(user_agent="tejas_house_price_predictor_app_v1_unique")
+
+geolocator = get_geolocator()
 
 
 # 2. Train and Cache Model
@@ -75,32 +83,46 @@ with col2:
     age = st.slider("Property Age (Years)", min_value=0, max_value=30, value=5)
 
 
-# 4. Free Location Geocoding with geopy (Pincode & Country Optimized)
+# 4. Cached Location Geocoding (Prevents repeated API calls & 429 rate limits)
+@st.cache_data(show_spinner=False)
 def get_free_location_data(address):
     if not address:
         return None
     try:
         query = address.strip()
+        location = None
         
-        # Format 6-digit PIN codes or local addresses for Indian geocoding
+        # Step A: Resolve 6-digit PIN code via India Postal API
         if query.isdigit() and len(query) == 6:
-            query = f"{query}, India"
-        elif "india" not in query.lower():
-            query = f"{query}, India"
+            try:
+                url = f"https://api.postalpincode.in/pincode/{query}"
+                req = urllib.request.Request(
+                    url, 
+                    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+                )
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    data = json.loads(response.read().decode())
+                    if data and data[0]["Status"] == "Success" and data[0]["PostOffice"]:
+                        po = data[0]["PostOffice"][0]
+                        place_name = f"{po['Name']}, {po['District']}, {po['State']}, India"
+                        location = geolocator.geocode(place_name, timeout=10)
+            except Exception:
+                pass # Fallback to direct geocoding
 
-        # Search OpenStreetMap database
-        location = geolocator.geocode(query, timeout=10)
-        
-        # Fallback to unformatted query if modified search fails
+        # Step B: Direct OpenStreetMap Geocoding
         if not location:
-            location = geolocator.geocode(address, timeout=10)
+            search_query = f"{query}, India" if "india" not in query.lower() else query
+            location = geolocator.geocode(search_query, timeout=10)
+            
+        if not location:
+            location = geolocator.geocode(query, timeout=10)
 
         if not location:
             return None
             
         lat, lng = location.latitude, location.longitude
         
-        # Deterministic amenity estimation based on spatial coordinates
+        # Spatial coordinate estimations
         transit_count = int(abs(hash(f"{lat:.2f},{lng:.2f}")) % 10) + 1
         school_count = int(abs(hash(f"{lat:.3f},{lng:.3f}")) % 12) + 1
 
@@ -111,18 +133,22 @@ def get_free_location_data(address):
             "transit_count": transit_count,
             "school_count": school_count
         }
+
+    except (GeocoderTimedOut, GeocoderServiceError):
+        st.error("The map service is currently busy. Please wait a few seconds and try again.")
+        return None
     except Exception as e:
         st.error(f"Geocoding Error: {e}")
         return None
 
 
-# 5. Prediction Execution
+# 5. Prediction Logic
 if st.button("Predict Property Price"):
     if not location_input:
         st.error("Please enter an address or pincode.")
         st.stop()
 
-    with st.spinner("Geocoding address via OpenStreetMap..."):
+    with st.spinner("Locating address via OpenStreetMap..."):
         spatial_data = get_free_location_data(location_input)
 
     if not spatial_data:
@@ -134,7 +160,7 @@ if st.button("Predict Property Price"):
     st.write(f"🚆 Estimated Nearby Transit Hubs: **{spatial_data['transit_count']}**")
     st.write(f"🏫 Estimated Nearby Schools: **{spatial_data['school_count']}**")
 
-    # Pass inputs into Random Forest pipeline
+    # ML Model Input Pipeline
     input_data = pd.DataFrame({
         'SquareFeet': [sqft],
         'Bedrooms': [bedrooms],
@@ -146,7 +172,7 @@ if st.button("Predict Property Price"):
 
     prediction = model.predict(input_data)[0]
 
-    # Format output into Lakhs or Crores
+    # Format output in Crores or Lakhs
     if prediction >= 10000000:
         formatted_price = f"₹{prediction:,.2f} ({prediction/10000000:.2f} Cr)"
     else:
