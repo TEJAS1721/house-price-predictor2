@@ -207,10 +207,8 @@ if location_input.strip():
                 age = st.slider("Property Age (Years)", min_value=0, max_value=30, value=5)
 
             if st.button("Predict Monthly Rent"):
-                # Approximate sqft implicitly for rental yield calculation
                 estimated_sqft = (bedrooms * 450) + 200
                 
-                # Monthly Rent math (~0.25% to 0.3% monthly yield of capital value)
                 base_monthly_rent = (estimated_sqft * base_rate_est) * 0.0028
                 
                 monthly_rent = (
@@ -222,7 +220,7 @@ if location_input.strip():
                     + (spatial_data['school_count'] * 500)
                 )
 
-                formatted_rent = f"₹{max(3000, int(monthly_rent)):,/ -} / month"
+                formatted_rent = f"₹{max(3000, int(monthly_rent)):,} / month"
                 st.success(f"### Estimated Monthly Rent: **{formatted_rent}**")
 
     else:
