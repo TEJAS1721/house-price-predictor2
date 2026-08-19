@@ -6,7 +6,7 @@ from sklearn.ensemble import RandomForestRegressor
 
 # Page Setup
 st.set_page_config(page_title="Real-Time House Price Predictor", page_icon="📍", layout="wide")
-st.title("📍 Real-Time House Price Predictor (100% Free - OpenStreetMap)")
+st.title("📍 Real-Time House Price Predictor (OpenStreetMap)")
 
 # 1. Initialize OpenStreetMap Geocoder (No API Key Required)
 geolocator = Nominatim(user_agent="indian_house_price_predictor")
@@ -60,7 +60,7 @@ model = get_trained_model()
 st.header("1. Enter Property Location")
 location_input = st.text_input(
     "Enter Address or Pincode", 
-    placeholder="e.g. Indiranagar, Bengaluru or 560038"
+    placeholder="e.g. Indiranagar, Bengaluru or 563114"
 )
 
 st.header("2. Property Characteristics")
@@ -75,24 +75,23 @@ with col2:
     age = st.slider("Property Age (Years)", min_value=0, max_value=30, value=5)
 
 
-# 4. Free Location Geocoding with geopy
-# 4. Free Location Geocoding with geopy (Pincode-Optimized)
+# 4. Free Location Geocoding with geopy (Pincode & Country Optimized)
 def get_free_location_data(address):
     if not address:
         return None
     try:
         query = address.strip()
         
-        # If user enters a 6-digit pincode or address without country, append ', India'
+        # Format 6-digit PIN codes or local addresses for Indian geocoding
         if query.isdigit() and len(query) == 6:
             query = f"{query}, India"
         elif "india" not in query.lower():
             query = f"{query}, India"
 
-        # Search OpenStreetMap with explicit location context
+        # Search OpenStreetMap database
         location = geolocator.geocode(query, timeout=10)
         
-        # Fallback to exact user query if modified query fails
+        # Fallback to unformatted query if modified search fails
         if not location:
             location = geolocator.geocode(address, timeout=10)
 
@@ -101,7 +100,7 @@ def get_free_location_data(address):
             
         lat, lng = location.latitude, location.longitude
         
-        # Synthetic amenity estimations derived from geographic coordinates
+        # Deterministic amenity estimation based on spatial coordinates
         transit_count = int(abs(hash(f"{lat:.2f},{lng:.2f}")) % 10) + 1
         school_count = int(abs(hash(f"{lat:.3f},{lng:.3f}")) % 12) + 1
 
@@ -117,7 +116,7 @@ def get_free_location_data(address):
         return None
 
 
-# 5. Prediction Logic
+# 5. Prediction Execution
 if st.button("Predict Property Price"):
     if not location_input:
         st.error("Please enter an address or pincode.")
@@ -127,7 +126,7 @@ if st.button("Predict Property Price"):
         spatial_data = get_free_location_data(location_input)
 
     if not spatial_data:
-        st.error("Could not find the entered location. Please enter a valid address or 6-digit Pincode.")
+        st.error("Could not locate the entered address or Pincode. Please check your spelling.")
         st.stop()
 
     st.info(f"📍 **Verified Location:** {spatial_data['address']}")
@@ -135,7 +134,7 @@ if st.button("Predict Property Price"):
     st.write(f"🚆 Estimated Nearby Transit Hubs: **{spatial_data['transit_count']}**")
     st.write(f"🏫 Estimated Nearby Schools: **{spatial_data['school_count']}**")
 
-    # Pass inputs into ML prediction pipeline
+    # Pass inputs into Random Forest pipeline
     input_data = pd.DataFrame({
         'SquareFeet': [sqft],
         'Bedrooms': [bedrooms],
