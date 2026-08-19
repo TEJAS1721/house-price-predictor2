@@ -1,5 +1,5 @@
 numpy
 pandas
 streamlit
-skcit-learn
+scikit-learn
 googlemaps
