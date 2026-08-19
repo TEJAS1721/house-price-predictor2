@@ -76,18 +76,32 @@ with col2:
 
 
 # 4. Free Location Geocoding with geopy
+# 4. Free Location Geocoding with geopy (Pincode-Optimized)
 def get_free_location_data(address):
     if not address:
         return None
     try:
-        # Convert address/pincode to Latitude & Longitude using Nominatim
-        location = geolocator.geocode(address, timeout=10)
+        query = address.strip()
+        
+        # If user enters a 6-digit pincode or address without country, append ', India'
+        if query.isdigit() and len(query) == 6:
+            query = f"{query}, India"
+        elif "india" not in query.lower():
+            query = f"{query}, India"
+
+        # Search OpenStreetMap with explicit location context
+        location = geolocator.geocode(query, timeout=10)
+        
+        # Fallback to exact user query if modified query fails
+        if not location:
+            location = geolocator.geocode(address, timeout=10)
+
         if not location:
             return None
             
         lat, lng = location.latitude, location.longitude
         
-        # Consistent amenity estimations derived from coordinates for PoC logic
+        # Synthetic amenity estimations derived from geographic coordinates
         transit_count = int(abs(hash(f"{lat:.2f},{lng:.2f}")) % 10) + 1
         school_count = int(abs(hash(f"{lat:.3f},{lng:.3f}")) % 12) + 1
 
