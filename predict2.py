@@ -51,7 +51,6 @@ def estimate_location_details(lat, lng):
             nearest_hub_name = hub
             nearest_hub = coords
 
-    # Check Tier assignment based on commuter distance
     if min_dist <= 35:
         tier = nearest_hub['tier']
         decay_rate = 0.04
@@ -132,7 +131,11 @@ def get_location_data(address):
     return None
 
 
-# 4. Streamlit UI: Minimized Location Input
+# Session State Management for Button Clicks
+if "user_role" not in st.session_state:
+    st.session_state.user_role = None
+
+# 4. Streamlit UI: Location Input
 st.subheader("1. Property Location")
 
 col_loc, _ = st.columns([1, 1])
@@ -162,21 +165,24 @@ if location_input.strip():
             unsafe_allow_html=True
         )
 
-        # 5. User Type Selection
+        # 5. User Role Buttons
         st.subheader("2. Select Your Intent")
-        
-        user_role = st.radio(
-            "Are you looking to Buy or Rent?",
-            ["Buyer", "Renter"],
-            horizontal=True,
-            key="user_role"
-        )
+        btn_col1, btn_col2, _ = st.columns([1, 1, 2])
 
-        st.subheader(f"3. Property Details ({user_role})")
-        col1, col2 = st.columns(2)
+        with btn_col1:
+            if st.button("🏠 Buyer", use_container_width=True):
+                st.session_state.user_role = "Buyer"
 
-        # BUYER PATH
-        if user_role == "Buyer":
+        with btn_col2:
+            if st.button("🔑 Renter", use_container_width=True):
+                st.session_state.user_role = "Renter"
+
+        # 6. Feature Inputs Pop Out Based on Button Clicked
+        if st.session_state.user_role == "Buyer":
+            st.markdown("---")
+            st.subheader("3. Enter Property Features (Buyer)")
+            col1, col2 = st.columns(2)
+
             with col1:
                 sqft = st.slider("Square Feet", min_value=500, max_value=5000, value=1200, step=50)
                 bedrooms = st.slider("Bedrooms (BHK)", min_value=1, max_value=6, value=2)
@@ -184,7 +190,7 @@ if location_input.strip():
                 bathrooms = st.slider("Bathrooms", min_value=1, max_value=5, value=2)
                 age = st.slider("Property Age (Years)", min_value=0, max_value=30, value=5)
 
-            if st.button("Predict Buying Price"):
+            if st.button("Predict Buying Price", type="primary"):
                 total_price = (
                     (sqft * base_rate_est)
                     + (bedrooms * 250000)
@@ -201,16 +207,18 @@ if location_input.strip():
 
                 st.success(f"### Estimated Property Purchase Price: **{formatted_price}**")
 
-        # RENTER PATH (Tier-Based Rental Calculation)
-        else:
+        elif st.session_state.user_role == "Renter":
+            st.markdown("---")
+            st.subheader("3. Enter Property Features (Renter)")
+            col1, col2 = st.columns(2)
+
             with col1:
                 bedrooms = st.slider("Bedrooms (BHK)", min_value=1, max_value=6, value=2)
                 bathrooms = st.slider("Bathrooms", min_value=1, max_value=5, value=2)
             with col2:
                 age = st.slider("Property Age (Years)", min_value=0, max_value=30, value=5)
 
-            if st.button("Predict Monthly Rent"):
-                # Independent Tier-Based Rental Math
+            if st.button("Predict Monthly Rent", type="primary"):
                 if loc_tier == 1:
                     base_1bhk_rent = 14000
                     extra_bhk_cost = 8500
