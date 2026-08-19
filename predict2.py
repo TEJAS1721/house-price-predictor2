@@ -39,7 +39,7 @@ def calculate_distance_km(lat1, lon1, lat2, lon2):
     return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
 
 
-def estimate_dynamic_sqft_price(lat, lng, address_text):
+def estimate_location_details(lat, lng):
     min_dist = float('inf')
     nearest_hub_name = None
     nearest_hub = None
@@ -51,19 +51,22 @@ def estimate_dynamic_sqft_price(lat, lng, address_text):
             nearest_hub_name = hub
             nearest_hub = coords
 
+    # Check Tier assignment based on commuter distance
     if min_dist <= 35:
+        tier = nearest_hub['tier']
         decay_rate = 0.04
         calculated_rate = nearest_hub['base_rate'] * math.exp(-decay_rate * min_dist)
         base_rate = max(2800, calculated_rate)
-        market_label = f"Suburban/Urban area near {nearest_hub_name} ({round(min_dist, 1)} km)"
+        market_label = f"Tier-{tier} Area near {nearest_hub_name} ({round(min_dist, 1)} km)"
     else:
+        tier = 3
         base_rate = 2200
-        market_label = f"Tier-3 District / Regional Town ({round(min_dist, 1)} km from {nearest_hub_name})"
+        market_label = f"Tier-3 District / Town ({round(min_dist, 1)} km from {nearest_hub_name})"
 
     spatial_jitter = 1.0 + (((int(lat * 10000) ^ int(lng * 10000)) % 16) - 8) / 100.0
     final_sqft_price = int(base_rate * spatial_jitter)
 
-    return final_sqft_price, market_label
+    return final_sqft_price, market_label, tier
 
 
 # 2. Geocoder Setup
@@ -132,7 +135,6 @@ def get_location_data(address):
 # 4. Streamlit UI: Minimized Location Input
 st.subheader("1. Property Location")
 
-# Constrain the search bar width using columns
 col_loc, _ = st.columns([1, 1])
 
 with col_loc:
@@ -147,20 +149,20 @@ if location_input.strip():
     spatial_data = get_location_data(location_input)
     
     if spatial_data:
-        base_rate_est, market_label = estimate_dynamic_sqft_price(
-            spatial_data['lat'], spatial_data['lng'], spatial_data['address']
+        base_rate_est, market_label, loc_tier = estimate_location_details(
+            spatial_data['lat'], spatial_data['lng']
         )
         st.markdown(
             f"""
             <div style="background-color: #d4edda; color: #155724; padding: 12px; border-radius: 8px; border: 1px solid #c3e6cb; margin-bottom: 15px;">
                 ✅ <strong>Verified Location:</strong> {spatial_data['address']}<br>
-                📊 <strong>Estimated Market Rate:</strong> ~₹{base_rate_est:,} / sq.ft. ({market_label})
+                📍 <strong>Location Classification:</strong> Tier {loc_tier} ({market_label})
             </div>
             """, 
             unsafe_allow_html=True
         )
 
-        # 5. User Type Selection (Buyer vs Renter)
+        # 5. User Type Selection
         st.subheader("2. Select Your Intent")
         
         user_role = st.radio(
@@ -170,10 +172,10 @@ if location_input.strip():
             key="user_role"
         )
 
-        st.subheader(f"3. Property Characteristics ({user_role})")
+        st.subheader(f"3. Property Details ({user_role})")
         col1, col2 = st.columns(2)
 
-        # Conditional Inputs Based on Role
+        # BUYER PATH
         if user_role == "Buyer":
             with col1:
                 sqft = st.slider("Square Feet", min_value=500, max_value=5000, value=1200, step=50)
@@ -199,7 +201,8 @@ if location_input.strip():
 
                 st.success(f"### Estimated Property Purchase Price: **{formatted_price}**")
 
-        else:  # Renter
+        # RENTER PATH (Tier-Based Rental Calculation)
+        else:
             with col1:
                 bedrooms = st.slider("Bedrooms (BHK)", min_value=1, max_value=6, value=2)
                 bathrooms = st.slider("Bathrooms", min_value=1, max_value=5, value=2)
@@ -207,20 +210,33 @@ if location_input.strip():
                 age = st.slider("Property Age (Years)", min_value=0, max_value=30, value=5)
 
             if st.button("Predict Monthly Rent"):
-                estimated_sqft = (bedrooms * 450) + 200
-                
-                base_monthly_rent = (estimated_sqft * base_rate_est) * 0.0028
-                
+                # Independent Tier-Based Rental Math
+                if loc_tier == 1:
+                    base_1bhk_rent = 14000
+                    extra_bhk_cost = 8500
+                    bathroom_cost = 2500
+                    age_depreciation = 180
+                elif loc_tier == 2:
+                    base_1bhk_rent = 7500
+                    extra_bhk_cost = 4500
+                    bathroom_cost = 1500
+                    age_depreciation = 100
+                else:  # Tier 3 (e.g., Kolar)
+                    base_1bhk_rent = 4000
+                    extra_bhk_cost = 2500
+                    bathroom_cost = 1000
+                    age_depreciation = 50
+
                 monthly_rent = (
-                    base_monthly_rent
-                    + (bedrooms * 3000)
-                    + (bathrooms * 2000)
-                    - (age * 150)
-                    + (spatial_data['public_transport_count'] * 500)
-                    + (spatial_data['school_count'] * 500)
+                    base_1bhk_rent
+                    + ((bedrooms - 1) * extra_bhk_cost)
+                    + (bathrooms * bathroom_cost)
+                    - (age * age_depreciation)
+                    + (spatial_data['public_transport_count'] * 300)
+                    + (spatial_data['school_count'] * 300)
                 )
 
-                formatted_rent = f"₹{max(3000, int(monthly_rent)):,} / month"
+                formatted_rent = f"₹{max(2500, int(monthly_rent)):,} / month"
                 st.success(f"### Estimated Monthly Rent: **{formatted_rent}**")
 
     else:
