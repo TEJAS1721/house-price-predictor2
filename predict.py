@@ -60,7 +60,7 @@ def estimate_dynamic_sqft_price(lat, lng, address_text):
 
     # 2. Independent District Headquarter / Tier-3 Town (e.g., Kolar, Hassan, Tumakuru)
     else:
-        base_rate = 2200  # Realistic base rate for Tier-3 district centers
+        base_rate = 2200  # Base rate for Tier-3 district centers
         market_label = f"Tier-3 District / Regional Town ({round(min_dist, 1)} km from {nearest_hub_name})"
 
     # Micro-spatial variance (street-level variation using lat/lng hash)
@@ -115,14 +115,7 @@ def get_location_data(address):
                 'Bus Stop'
             ]
             
-            if score < 75:
-                return None
-
-            if addr_type in forbidden_types:
-                return None
-
-            formatted_address = location.address
-            if "india" not in formatted_address.lower():
+            if score < 70 or addr_type in forbidden_types:
                 return None
 
             lat, lng = location.latitude, location.longitude
@@ -132,7 +125,7 @@ def get_location_data(address):
             return {
                 "lat": lat,
                 "lng": lng,
-                "address": formatted_address,
+                "address": location.address,
                 "public_transport_count": public_transport_count,
                 "school_count": school_count,
             }
@@ -146,7 +139,7 @@ def get_location_data(address):
 st.header("1. Enter Property Location")
 location_input = st.text_input(
     "Enter City, Town, or 6-digit Pincode", 
-    placeholder="e.g. Bengaluru, Kolar, Mysuru, or 563101"
+    placeholder="e.g. Bengaluru, Kolar, Mysuru, or 563114"
 )
 
 spatial_data = None
