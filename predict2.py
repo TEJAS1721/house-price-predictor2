@@ -1,3 +1,4 @@
+
 import math
 import numpy as np
 import pandas as pd
@@ -131,20 +132,23 @@ def get_location_data(address):
     return None
 
 
-# Session State Management for Button Clicks
+# Session State Management
 if "user_role" not in st.session_state:
     st.session_state.user_role = None
 
-# 4. Streamlit UI: Location Input
+# 4. Streamlit UI: Location Input Form with Search Button & Enter Key Support
 st.subheader("1. Property Location")
 
-col_loc, _ = st.columns([1, 1])
-
-with col_loc:
-    location_input = st.text_input(
-        "Enter City, Town, or 6-digit Pincode", 
-        placeholder="e.g. Bengaluru, Kolar, 563114"
-    )
+with st.form(key="search_form", border=False):
+    col_input, col_btn = st.columns([3, 1])
+    with col_input:
+        location_input = st.text_input(
+            "Enter City, Town, or 6-digit Pincode", 
+            placeholder="e.g. Bengaluru, Kolar, 563114"
+        )
+    with col_btn:
+        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+        search_submitted = st.form_submit_button("🔍 Search", use_container_width=True)
 
 spatial_data = None
 
@@ -155,32 +159,34 @@ if location_input.strip():
         base_rate_est, market_label, loc_tier = estimate_location_details(
             spatial_data['lat'], spatial_data['lng']
         )
+        
+        # Updated green box format
         st.markdown(
             f"""
             <div style="background-color: #d4edda; color: #155724; padding: 12px; border-radius: 8px; border: 1px solid #c3e6cb; margin-bottom: 15px;">
-                ✅ <strong>Verified Location:</strong> {spatial_data['address']}<br>
-                📍 <strong>Location Classification:</strong> Tier {loc_tier} ({market_label})
+                ✅ {spatial_data['address']}<br>
+                📍 <strong>Classification:</strong> Tier {loc_tier} ({market_label})
             </div>
             """, 
             unsafe_allow_html=True
         )
 
-        # 5. User Role Buttons
+        # 5. User Intent Selection (Own vs Rent)
         st.subheader("2. Select Your Intent")
         btn_col1, btn_col2, _ = st.columns([1, 1, 2])
 
         with btn_col1:
-            if st.button("🏠 Buyer", use_container_width=True):
-                st.session_state.user_role = "Buyer"
+            if st.button("🏠 Own", use_container_width=True):
+                st.session_state.user_role = "Own"
 
         with btn_col2:
-            if st.button("🔑 Renter", use_container_width=True):
-                st.session_state.user_role = "Renter"
+            if st.button("🔑 Rent", use_container_width=True):
+                st.session_state.user_role = "Rent"
 
         # 6. Feature Inputs Pop Out Based on Button Clicked
-        if st.session_state.user_role == "Buyer":
+        if st.session_state.user_role == "Own":
             st.markdown("---")
-            st.subheader("3. Enter Property Features (Buyer)")
+            st.subheader("3. Enter Property Details (Own)")
             col1, col2 = st.columns(2)
 
             with col1:
@@ -207,9 +213,9 @@ if location_input.strip():
 
                 st.success(f"### Estimated Property Purchase Price: **{formatted_price}**")
 
-        elif st.session_state.user_role == "Renter":
+        elif st.session_state.user_role == "Rent":
             st.markdown("---")
-            st.subheader("3. Enter Property Features (Renter)")
+            st.subheader("3. Enter Property Details (Rent)")
             col1, col2 = st.columns(2)
 
             with col1:
