@@ -122,7 +122,7 @@ if location_input.strip():
                 ✅ <strong>Valid Location/Pincode Verified:</strong> {data_check['address']}
             </div>
             """, 
-            unsafe_allowed_html=True
+            unsafe_allow_html=True
         )
 
 st.header("2. Property Characteristics")
