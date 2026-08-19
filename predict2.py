@@ -1,4 +1,3 @@
-
 import math
 import numpy as np
 import pandas as pd
@@ -8,6 +7,22 @@ from geopy.geocoders import ArcGIS
 # Page Setup
 st.set_page_config(page_title="Real-Time House Price Predictor", page_icon="📍", layout="wide")
 st.title("📍 Real-Time House Price Predictor")
+
+# Custom CSS for integrated search bar styling
+st.markdown("""
+    <style>
+    /* Remove padding inside search form */
+    div[data-testid="stForm"] {
+        border: none !important;
+        padding: 0 !important;
+    }
+    /* Vertically align input and button bottom edges */
+    div[data-testid="column"] {
+        display: flex;
+        align-items: flex-end;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 # 1. Tier-1 & Tier-2 City Anchors
 CITY_HUBS = {
@@ -136,19 +151,23 @@ def get_location_data(address):
 if "user_role" not in st.session_state:
     st.session_state.user_role = None
 
-# 4. Streamlit UI: Location Input Form with Search Button & Enter Key Support
+# 4. Streamlit UI: Shorter & Integrated Search Field
 st.subheader("1. Property Location")
 
-with st.form(key="search_form", border=False):
-    col_input, col_btn = st.columns([3, 1])
-    with col_input:
-        location_input = st.text_input(
-            "Enter City, Town, or 6-digit Pincode", 
-            placeholder="e.g. Bengaluru, Kolar, 563114"
-        )
-    with col_btn:
-        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-        search_submitted = st.form_submit_button("🔍 Search", use_container_width=True)
+# Limit the width of the search area to make it shorter horizontally
+search_container, _ = st.columns([2, 3])
+
+with search_container:
+    with st.form(key="search_form", border=False):
+        c_input, c_btn = st.columns([3, 1], gap="small")
+        with c_input:
+            location_input = st.text_input(
+                "Property Location", 
+                placeholder="City, Town, or Pincode...",
+                label_visibility="collapsed"
+            )
+        with c_btn:
+            search_submitted = st.form_submit_button("🔍 Search", use_container_width=True)
 
 spatial_data = None
 
@@ -160,7 +179,6 @@ if location_input.strip():
             spatial_data['lat'], spatial_data['lng']
         )
         
-        # Updated green box format
         st.markdown(
             f"""
             <div style="background-color: #d4edda; color: #155724; padding: 12px; border-radius: 8px; border: 1px solid #c3e6cb; margin-bottom: 15px;">
@@ -173,7 +191,7 @@ if location_input.strip():
 
         # 5. User Intent Selection (Own vs Rent)
         st.subheader("2. Select Your Intent")
-        btn_col1, btn_col2, _ = st.columns([1, 1, 2])
+        btn_col1, btn_col2, _ = st.columns([1, 1, 3])
 
         with btn_col1:
             if st.button("🏠 Own", use_container_width=True):
