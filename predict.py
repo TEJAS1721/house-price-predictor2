@@ -3,7 +3,6 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from geopy.geocoders import ArcGIS
-from sklearn.ensemble import RandomForestRegressor
 
 # Page Setup
 st.set_page_config(page_title="Real-Time House Price Predictor", page_icon="📍", layout="wide")
@@ -34,28 +33,23 @@ def estimate_dynamic_sqft_price(lat, lng):
     min_dist = float('inf')
     nearest_hub = None
 
-    # Find nearest major city center
     for hub, coords in CITY_HUBS.items():
         dist = calculate_distance_km(lat, lng, coords['lat'], coords['lng'])
         if dist < min_dist:
             min_dist = dist
             nearest_hub = coords
 
-    # Exponential decay rate: Price drops as distance increases (~4% per km)
     decay_rate = 0.04
     calculated_rate = nearest_hub['base_rate'] * math.exp(-decay_rate * min_dist)
-
-    # Floor limit for suburban/outskirt areas (₹3,000/sq.ft minimum)
     calculated_rate = max(3000, calculated_rate)
 
-    # Deterministic local micro-variance (±8% based on exact street coordinates)
     spatial_jitter = 1.0 + (((int(lat * 10000) ^ int(lng * 10000)) % 16) - 8) / 100.0
     final_sqft_price = int(calculated_rate * spatial_jitter)
 
     return final_sqft_price, round(min_dist, 1)
 
 
-# 2. Initialize ArcGIS Geocoder
+# 2. Initialize Geocoder
 @st.cache_resource
 def get_geolocator():
     return ArcGIS(timeout=10)
@@ -63,10 +57,10 @@ def get_geolocator():
 geolocator = get_geolocator()
 
 
-# 3. Location Geocoding Function
+# 3. Strict Geocoding Validation (No Fake Fallbacks)
 @st.cache_data(show_spinner=False)
 def get_location_data(address):
-    if not address:
+    if not address or len(address.strip()) < 3:
         return None
 
     query = address.strip()
@@ -77,34 +71,30 @@ def get_location_data(address):
     elif "india" not in query.lower():
         query = f"{query}, India"
 
-    lat, lng, formatted_address = None, None, None
-
     try:
         location = geolocator.geocode(query)
-        if location:
-            lat, lng = location.latitude, location.longitude
+        # Verify geocoder returned a real match
+        if location and location.latitude and location.longitude:
+            lat = location.latitude
+            lng = location.longitude
             formatted_address = location.address
+
+            # Derive amenity counts from verified lat/lng
+            public_transport_count = int(abs(hash(f"{lat:.2f},{lng:.2f}")) % 10) + 1
+            school_count = int(abs(hash(f"{lat:.3f},{lng:.3f}")) % 12) + 1
+
+            return {
+                "lat": lat,
+                "lng": lng,
+                "address": formatted_address,
+                "public_transport_count": public_transport_count,
+                "school_count": school_count,
+            }
     except Exception:
         pass
 
-    # Fallback coordinates if geocoding fails
-    if lat is None or lng is None:
-        lat = 12.9716 + (hash(query) % 100) / 1000.0
-        lng = 77.5946 + (hash(query) % 100) / 1000.0
-        formatted_address = f"{address.strip()} (Verified Location)"
-
-    # Estimate spatial amenities
-    public_transport_count = int(abs(hash(f"{lat:.2f},{lng:.2f}")) % 10) + 1
-    school_count = int(abs(hash(f"{lat:.3f},{lng:.3f}")) % 12) + 1
-
-    return {
-        "lat": lat,
-        "lng": lng,
-        "address": formatted_address,
-        "public_transport_count": public_transport_count,
-        "school_count": school_count,
-        "is_pincode": is_pincode
-    }
+    # If place does not exist or geocoding fails, return None
+    return None
 
 
 # 4. User Interface Inputs
@@ -114,20 +104,25 @@ location_input = st.text_input(
     placeholder="e.g. Indiranagar, Bengaluru or 563114"
 )
 
-# Live Location Validation UI
+spatial_data = None
+
 if location_input.strip():
-    data_check = get_location_data(location_input)
-    if data_check:
-        base_rate_est, dist_est = estimate_dynamic_sqft_price(data_check['lat'], data_check['lng'])
+    spatial_data = get_location_data(location_input)
+    
+    if spatial_data:
+        base_rate_est, dist_est = estimate_dynamic_sqft_price(spatial_data['lat'], spatial_data['lng'])
         st.markdown(
             f"""
             <div style="background-color: #d4edda; color: #155724; padding: 12px; border-radius: 8px; border: 1px solid #c3e6cb; margin-bottom: 15px;">
-                ✅ <strong>Verified Location:</strong> {data_check['address']}<br>
+                ✅ <strong>Verified Location:</strong> {spatial_data['address']}<br>
                 📊 <strong>Estimated Market Rate:</strong> ~₹{base_rate_est:,} / sq.ft. ({dist_est} km from key urban hub)
             </div>
             """, 
             unsafe_allow_html=True
         )
+    else:
+        st.error("❌ **Invalid Location:** Place not found. Please enter a real place name or a valid 6-digit Indian pincode.")
+
 
 st.header("2. Property Characteristics")
 col1, col2 = st.columns(2)
@@ -141,35 +136,32 @@ with col2:
     age = st.slider("Property Age (Years)", min_value=0, max_value=30, value=5)
 
 
-# 5. Dynamic Prediction Pipeline
+# 5. Prediction Step
 if st.button("Predict Property Price"):
-    if not location_input:
+    if not location_input.strip():
         st.error("Please enter an address or pincode.")
         st.stop()
 
-    with st.spinner("Locating address and evaluating market rates..."):
-        spatial_data = get_location_data(location_input)
-        base_sqft_price, hub_distance = estimate_dynamic_sqft_price(
-            spatial_data['lat'], spatial_data['lng']
-        )
+    if not spatial_data:
+        st.error("Cannot compute price for an invalid or non-existent location. Please provide a valid address.")
+        st.stop()
 
-    # Display Location Diagnostics
+    base_sqft_price, hub_distance = estimate_dynamic_sqft_price(
+        spatial_data['lat'], spatial_data['lng']
+    )
+
     st.write(f"🌐 **Coordinates:** Lat `{spatial_data['lat']:.4f}`, Lng `{spatial_data['lng']:.4f}`")
     st.write(f"📏 Distance to Prime City Core: **{hub_distance} km**")
-    st.write(f"🚆 Nearby Public Transport Hubs: **{spatial_data['public_transport_count']}**")
-    st.write(f"🏫 Nearby Schools: **{spatial_data['school_count']}**")
 
-    # Dynamic Pricing Logic using calculated location rate
     total_price = (
         (sqft * base_sqft_price)
         + (bedrooms * 350000)
         + (bathrooms * 200000)
-        - (age * (base_sqft_price * 5))  # Age depreciation scales with locality value
+        - (age * (base_sqft_price * 5))
         + (spatial_data['public_transport_count'] * 120000)
         + (spatial_data['school_count'] * 150000)
     )
 
-    # Format price in Crores or Lakhs
     if total_price >= 10000000:
         formatted_price = f"₹{total_price:,.2f} ({total_price/10000000:.2f} Cr)"
     else:
