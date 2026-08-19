@@ -20,13 +20,12 @@ CITY_HUBS = {
 
 
 def calculate_distance_km(lat1, lon1, lat2, lon2):
-    R = 6371.0  # Earth radius in kilometers
+    R = 6371.0
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
     a = (math.sin(dlat / 2) ** 2 + 
          math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2)
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return R * c
+    return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
 
 
 def estimate_dynamic_sqft_price(lat, lng):
@@ -49,7 +48,7 @@ def estimate_dynamic_sqft_price(lat, lng):
     return final_sqft_price, round(min_dist, 1)
 
 
-# 2. Initialize Geocoder
+# 2. Geocoder Setup
 @st.cache_resource
 def get_geolocator():
     return ArcGIS(timeout=10)
@@ -57,29 +56,45 @@ def get_geolocator():
 geolocator = get_geolocator()
 
 
-# 3. Strict Geocoding Validation (No Fake Fallbacks)
+# 3. Strict City / Town / Pincode Only Validation
 @st.cache_data(show_spinner=False)
 def get_location_data(address):
     if not address or len(address.strip()) < 3:
         return None
 
-    query = address.strip()
-    is_pincode = query.isdigit() and len(query) == 6
+    raw_query = address.strip()
 
-    if is_pincode:
-        query = f"{query}, India"
-    elif "india" not in query.lower():
-        query = f"{query}, India"
+    # Reject non-6-digit numbers if user typed numbers only
+    if raw_query.isdigit() and len(raw_query) != 6:
+        return None
+
+    query = f"{raw_query}, India" if "india" not in raw_query.lower() else raw_query
 
     try:
-        location = geolocator.geocode(query)
-        # Verify geocoder returned a real match
+        location = geolocator.geocode(query, out_fields="*")
+        
         if location and location.latitude and location.longitude:
-            lat = location.latitude
-            lng = location.longitude
-            formatted_address = location.address
+            raw_data = getattr(location, 'raw', {})
+            attributes = raw_data.get('attributes', {}) or raw_data.get('feature', {}).get('attributes', {})
+            
+            score = attributes.get('Score', 100)
+            addr_type = attributes.get('Addr_type', '')
 
-            # Derive amenity counts from verified lat/lng
+            # ALLOWED: Strictly City, Town (Locality), Pincode (Postal), or District level boundaries
+            # REJECTED: StreetAddress, PointAddress, StreetName, Stop, Neighborhood, POI, Building
+            allowed_types = ['City', 'Locality', 'Postal', 'PostalLocality', 'PostalCode', 'District', 'Subregion']
+            
+            if score < 85:
+                return None
+            
+            if addr_type and addr_type not in allowed_types:
+                return None
+
+            formatted_address = location.address
+            if "india" not in formatted_address.lower():
+                return None
+
+            lat, lng = location.latitude, location.longitude
             public_transport_count = int(abs(hash(f"{lat:.2f},{lng:.2f}")) % 10) + 1
             school_count = int(abs(hash(f"{lat:.3f},{lng:.3f}")) % 12) + 1
 
@@ -93,15 +108,14 @@ def get_location_data(address):
     except Exception:
         pass
 
-    # If place does not exist or geocoding fails, return None
     return None
 
 
-# 4. User Interface Inputs
+# 4. Streamlit UI
 st.header("1. Enter Property Location")
 location_input = st.text_input(
-    "Enter Address or Pincode", 
-    placeholder="e.g. Indiranagar, Bengaluru or 563114"
+    "Enter City, Town, or 6-digit Pincode", 
+    placeholder="e.g. Bengaluru, Mysore, or 560038"
 )
 
 spatial_data = None
@@ -114,15 +128,14 @@ if location_input.strip():
         st.markdown(
             f"""
             <div style="background-color: #d4edda; color: #155724; padding: 12px; border-radius: 8px; border: 1px solid #c3e6cb; margin-bottom: 15px;">
-                ✅ <strong>Verified Location:</strong> {spatial_data['address']}<br>
+                ✅ <strong>Verified City/Town/Pincode:</strong> {spatial_data['address']}<br>
                 📊 <strong>Estimated Market Rate:</strong> ~₹{base_rate_est:,} / sq.ft. ({dist_est} km from key urban hub)
             </div>
             """, 
             unsafe_allow_html=True
         )
     else:
-        st.error("❌ **Invalid Location:** Place not found. Please enter a real place name or a valid 6-digit Indian pincode.")
-
+        st.error("❌ **Invalid Input:** Please enter a valid City name, Town name, or a 6-digit Indian Pincode. Street names, stops, and specific buildings are not allowed.")
 
 st.header("2. Property Characteristics")
 col1, col2 = st.columns(2)
@@ -136,14 +149,14 @@ with col2:
     age = st.slider("Property Age (Years)", min_value=0, max_value=30, value=5)
 
 
-# 5. Prediction Step
+# 5. Prediction Execution
 if st.button("Predict Property Price"):
     if not location_input.strip():
-        st.error("Please enter an address or pincode.")
+        st.error("Please enter a City, Town, or Pincode.")
         st.stop()
 
     if not spatial_data:
-        st.error("Cannot compute price for an invalid or non-existent location. Please provide a valid address.")
+        st.error("Cannot predict price. Please provide a valid City, Town, or 6-digit Pincode above.")
         st.stop()
 
     base_sqft_price, hub_distance = estimate_dynamic_sqft_price(
