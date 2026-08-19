@@ -8,7 +8,7 @@ from geopy.geocoders import ArcGIS
 st.set_page_config(page_title="Real-Time House Price Predictor", page_icon="📍", layout="wide")
 st.title("📍 Real-Time House Price Predictor")
 
-# Custom CSS for integrated search bar layout
+# Custom CSS for integrated search bar styling
 st.markdown("""
     <style>
     /* Remove padding inside search form */
@@ -151,9 +151,10 @@ def get_location_data(address):
 if "user_role" not in st.session_state:
     st.session_state.user_role = None
 
-# 4. Streamlit UI: Compact Search Container
+# 4. Streamlit UI: Shorter & Integrated Search Field
 st.subheader("1. Property Location")
 
+# Limit the width of the search area to make it shorter horizontally
 search_container, _ = st.columns([2, 3])
 
 with search_container:
@@ -174,23 +175,6 @@ if location_input.strip():
     spatial_data = get_location_data(location_input)
     
     if spatial_data:
-        # Dynamically turn the input box border & background green on success
-        st.markdown(
-            """
-            <style>
-            div[data-baseweb="input"] {
-                border: 2px solid #28a745 !important;
-                border-radius: 8px !important;
-                background-color: #f0fff4 !important;
-            }
-            div[data-baseweb="input"] input {
-                color: #155724 !important;
-            }
-            </style>
-            """,
-            unsafe_allow_html=True
-        )
-
         base_rate_est, market_label, loc_tier = estimate_location_details(
             spatial_data['lat'], spatial_data['lng']
         )
@@ -269,7 +253,7 @@ if location_input.strip():
                     extra_bhk_cost = 4500
                     bathroom_cost = 1500
                     age_depreciation = 100
-                else:  # Tier 3
+                else:  # Tier 3 (e.g., Kolar)
                     base_1bhk_rent = 4000
                     extra_bhk_cost = 2500
                     bathroom_cost = 1000
@@ -288,17 +272,4 @@ if location_input.strip():
                 st.success(f"### Estimated Monthly Rent: **{formatted_rent}**")
 
     else:
-        # Dynamically turn the input box border red on invalid location
-        st.markdown(
-            """
-            <style>
-            div[data-baseweb="input"] {
-                border: 2px solid #dc3545 !important;
-                border-radius: 8px !important;
-                background-color: #fff5f5 !important;
-            }
-            </style>
-            """,
-            unsafe_allow_html=True
-        )
         st.error("❌ **Invalid Input:** Please enter a valid City name, Town name, or a 6-digit Indian Pincode. Street names, stops, and specific buildings are not allowed.")
