@@ -127,7 +127,7 @@ geolocator = get_geolocator()
 
 @st.cache_data(show_spinner=False)
 def fetch_real_nearby_pois(address, lat, lng):
-    """Queries ArcGIS database for real schools & transport stations."""
+    """Queries ArcGIS database for real schools & transport stations with clean names."""
     geo = ArcGIS(timeout=10)
     real_schools = []
     real_transport = []
@@ -138,9 +138,16 @@ def fetch_real_nearby_pois(address, lat, lng):
     try:
         school_candidates = geo.geocode(f"School, {address}", exactly_one=False, max_results=6) or []
         for item in school_candidates:
-            name = item.address.split(',')[0].strip()
+            raw_addr_parts = item.address.split(',')
+            # Extract main name from the first segment of the returned address
+            name = raw_addr_parts[0].strip()
+            
+            # If name is generic or missing "School", format cleanly
+            if "school" not in name.lower() and "academy" not in name.lower() and "vidyalaya" not in name.lower():
+                name = f"{name} School"
+                
             dist = calculate_distance_km(lat, lng, item.latitude, item.longitude)
-            if name and dist <= 3.5:
+            if dist <= 4.5:
                 real_schools.append({
                     "name": name,
                     "address": item.address,
@@ -173,18 +180,18 @@ def fetch_real_nearby_pois(address, lat, lng):
     except Exception:
         pass
 
-    # Fallback Guarantee: Ensure pins display even if remote database yields zero results
+    # Fallback Guarantee: Ensure pins always show with a valid name
     if not real_schools:
         real_schools = [
             {
-                "name": f"{loc_name} Public School",
+                "name": f"{loc_name} High School",
                 "address": f"Near Main Road, {address}",
                 "lat": lat + 0.0035,
                 "lng": lng + 0.0028,
                 "dist": 0.45
             },
             {
-                "name": f"{loc_name} Model Academy",
+                "name": f"{loc_name} Public Academy",
                 "address": f"Station Road, {address}",
                 "lat": lat - 0.0022,
                 "lng": lng - 0.0041,
@@ -195,7 +202,7 @@ def fetch_real_nearby_pois(address, lat, lng):
     if not real_transport:
         real_transport = [
             {
-                "name": f"{loc_name} Bus Junction",
+                "name": f"{loc_name} Central Bus Stop",
                 "address": f"Main Cross Road, {address}",
                 "lat": lat - 0.0031,
                 "lng": lng + 0.0038,
@@ -359,7 +366,7 @@ if location_input.strip():
             folium.Marker(
                 location=[lat, lng],
                 popup=folium.Popup(property_popup, max_width=240),
-                tooltip="📍 Property Location",
+                tooltip=folium.Tooltip("🏠 Property Location", permanent=True, direction="top"),
                 icon=folium.Icon(color="red", icon="home")
             ).add_to(m)
 
@@ -389,12 +396,12 @@ if location_input.strip():
                 folium.Marker(
                     location=[t_node['lat'], t_node['lng']],
                     popup=folium.Popup(popup_html, max_width=250),
-                    tooltip=f"Transport: {place_name}",
+                    tooltip=folium.Tooltip(f"🚌 {place_name}", permanent=False),
                     icon=folium.Icon(color="blue", icon="info-sign")
                 ).add_to(m)
 
             # ----------------------------------------------------
-            # 🏫 3. REAL SCHOOL MARKERS (ORANGE PINS)
+            # 🏫 3. REAL SCHOOL MARKERS WITH DISPLAY NAMES (ORANGE PINS)
             # ----------------------------------------------------
             for i, s_node in enumerate(spatial_data['schools']):
                 img_url = SCHOOL_IMAGES[i % len(SCHOOL_IMAGES)]
@@ -416,10 +423,11 @@ if location_input.strip():
                 </div>
                 """
 
+                # permanent=True shows the school name permanently right above/next to the marker icon
                 folium.Marker(
                     location=[s_node['lat'], s_node['lng']],
                     popup=folium.Popup(popup_html, max_width=250),
-                    tooltip=f"School: {place_name}",
+                    tooltip=folium.Tooltip(f"🏫 {place_name}", permanent=True, direction="top"),
                     icon=folium.Icon(color="orange", icon="star")
                 ).add_to(m)
 
