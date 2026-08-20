@@ -8,7 +8,7 @@ import folium
 from streamlit_folium import st_folium
 
 # ----------------------------------------------------
-# 1. PAGE SETUP (MUST BE AT THE TOP)
+# 1. PAGE SETUP
 # ----------------------------------------------------
 st.set_page_config(page_title="Real-Time House Price Predictor", page_icon="📍", layout="wide")
 st.title("📍 Real-Time House Price Predictor")
@@ -85,7 +85,7 @@ def estimate_location_details(lat, lng):
     return final_sqft_price, market_label, tier
 
 
-def get_circle_points(lat, lng, radius_meters=2500, num_points=64):
+def get_circle_points(lat, lng, radius_meters=3000, num_points=64):
     points = []
     lat_rad = math.radians(lat)
     for i in range(num_points):
@@ -100,7 +100,7 @@ def get_circle_points(lat, lng, radius_meters=2500, num_points=64):
 
 
 # ----------------------------------------------------
-# 3. GUARANTEED REAL POI RETRIEVAL (SCHOOLS, COLLEGES, TRANSIT)
+# 3. ADVANCED MULTI-ENGINE POI RETRIEVAL
 # ----------------------------------------------------
 @st.cache_resource
 def get_geolocator():
@@ -111,54 +111,103 @@ geolocator = get_geolocator()
 
 @st.cache_data(show_spinner=False)
 def fetch_real_nearby_pois(address, lat, lng):
-    """Retrieves real schools, colleges, and public transport hubs using multi-source API queries."""
+    """Fetches real colleges, schools, and transport options using ArcGIS + Overpass fallback."""
     real_schools = []
     real_transport = []
     seen_names = set()
 
-    headers = {"User-Agent": "RealHousePricePredictorApp/4.0 (Contact: admin@app.com)"}
+    clean_town = address.split(',')[0].strip()
 
-    # Bounding Box (~6 km radius around coordinates)
-    delta_lat = 0.055
-    delta_lng = 0.055
-    s, w, n, e = lat - delta_lat, lng - delta_lng, lat + delta_lat, lng + delta_lng
+    # ---------------------------------------------------------
+    # ENGINE 1: ARCGIS CATEGORY GEOCODING (EXCELLENT FOR INDIA)
+    # ---------------------------------------------------------
+    search_queries_edu = [
+        f"College in {clean_town}",
+        f"School in {clean_town}",
+        f"PU College in {clean_town}"
+    ]
 
-    # ----------------------------------------------------
-    # QUERY 1: OVERPASS API (SCHOOLS, COLLEGES, TRANSIT)
-    # ----------------------------------------------------
+    for q in search_queries_edu:
+        try:
+            results = geolocator.geocode(q, exactly_one=False, max_results=12) or []
+            for item in results:
+                raw_name = item.address.split(',')[0].strip()
+                p_lat, p_lng = item.latitude, item.longitude
+                dist = calculate_distance_km(lat, lng, p_lat, p_lng)
+
+                clean_key = raw_name.lower().replace(" ", "")
+                if clean_key not in seen_names and dist <= 18.0:
+                    seen_names.add(clean_key)
+                    real_schools.append({
+                        "name": raw_name,
+                        "lat": p_lat,
+                        "lng": p_lng,
+                        "dist": round(dist, 2)
+                    })
+        except Exception:
+            pass
+
+    search_queries_transit = [
+        f"Bus Stand in {clean_town}",
+        f"Railway Station in {clean_town}",
+        f"Transit Station in {clean_town}"
+    ]
+
+    for q in search_queries_transit:
+        try:
+            results = geolocator.geocode(q, exactly_one=False, max_results=8) or []
+            for item in results:
+                raw_name = item.address.split(',')[0].strip()
+                p_lat, p_lng = item.latitude, item.longitude
+                dist = calculate_distance_km(lat, lng, p_lat, p_lng)
+
+                clean_key = raw_name.lower().replace(" ", "")
+                if clean_key not in seen_names and dist <= 20.0:
+                    seen_names.add(clean_key)
+                    real_transport.append({
+                        "name": raw_name,
+                        "lat": p_lat,
+                        "lng": p_lng,
+                        "dist": round(dist, 2)
+                    })
+        except Exception:
+            pass
+
+    # ---------------------------------------------------------
+    # ENGINE 2: OVERPASS API (EXPANDED BBOX FOR EXTRA DATA)
+    # ---------------------------------------------------------
+    delta = 0.08  # ~8-10 km radius
+    s, w, n, e = lat - delta, lng - delta, lat + delta, lng + delta
+
     try:
         overpass_url = "https://overpass-api.de/api/interpreter"
         overpass_query = f"""
-        [out:json][timeout:20];
+        [out:json][timeout:15];
         (
-          nwr["amenity"="school"]({s},{w},{n},{e});
           nwr["amenity"="college"]({s},{w},{n},{e});
           nwr["amenity"="university"]({s},{w},{n},{e});
-          nwr["building"="school"]({s},{w},{n},{e});
+          nwr["amenity"="school"]({s},{w},{n},{e});
           nwr["amenity"="bus_station"]({s},{w},{n},{e});
           nwr["railway"="station"]({s},{w},{n},{e});
-          nwr["highway"="bus_stop"]({s},{w},{n},{e});
         );
-        out center 30;
+        out center 35;
         """
-        response = requests.post(overpass_url, data={'data': overpass_query}, headers=headers, timeout=10)
-        
-        if response.status_code == 200:
-            elements = response.json().get("elements", [])
-            for elem in elements:
+        headers = {"User-Agent": "HousePricePredictorApp/5.0"}
+        res = requests.post(overpass_url, data={'data': overpass_query}, headers=headers, timeout=8)
+
+        if res.status_code == 200:
+            for elem in res.json().get("elements", []):
                 tags = elem.get("tags", {})
-                name = tags.get("name") or tags.get("name:en") or tags.get("official_name")
-                
+                name = tags.get("name") or tags.get("name:en")
                 if not name:
                     continue
 
                 name = name.strip()
-                clean_key = name.lower()
+                clean_key = name.lower().replace(" ", "")
 
                 if clean_key in seen_names:
                     continue
 
-                # Get coordinates
                 if "center" in elem:
                     p_lat, p_lng = elem["center"]["lat"], elem["center"]["lon"]
                 elif "lat" in elem and "lon" in elem:
@@ -171,58 +220,14 @@ def fetch_real_nearby_pois(address, lat, lng):
 
                 amenity = tags.get("amenity", "").lower()
                 railway = tags.get("railway", "").lower()
-                highway = tags.get("highway", "").lower()
 
-                # Categorize into Transit vs Schools/Colleges
-                if railway in ["station", "halt"] or amenity == "bus_station" or highway == "bus_stop":
+                if railway == "station" or amenity == "bus_station":
                     real_transport.append({"name": name, "lat": p_lat, "lng": p_lng, "dist": round(dist, 2)})
                 else:
                     real_schools.append({"name": name, "lat": p_lat, "lng": p_lng, "dist": round(dist, 2)})
     except Exception:
         pass
 
-    # ----------------------------------------------------
-    # QUERY 2: NOMINATIM SEARCH FALLBACK (FOR SPARSELY TAGGED TOWNS)
-    # ----------------------------------------------------
-    clean_town = address.split(',')[0].strip()
-
-    if len(real_schools) < 3:
-        try:
-            nom_url = "https://nominatim.openstreetmap.org/search"
-            for search_term in [f"school in {clean_town}", f"college in {clean_town}"]:
-                params = {"q": search_term, "format": "json", "addressdetails": 1, "limit": 10}
-                res = requests.get(nom_url, params=params, headers=headers, timeout=6)
-                if res.status_code == 200:
-                    for item in res.json():
-                        p_name = item.get("display_name", "").split(",")[0].strip()
-                        p_lat, p_lng = float(item["lat"]), float(item["lon"])
-                        dist = calculate_distance_km(lat, lng, p_lat, p_lng)
-
-                        if p_name.lower() not in seen_names and dist <= 10.0:
-                            seen_names.add(p_name.lower())
-                            real_schools.append({"name": p_name, "lat": p_lat, "lng": p_lng, "dist": round(dist, 2)})
-        except Exception:
-            pass
-
-    if len(real_transport) < 2:
-        try:
-            nom_url = "https://nominatim.openstreetmap.org/search"
-            for search_term in [f"bus stand in {clean_town}", f"railway station in {clean_town}"]:
-                params = {"q": search_term, "format": "json", "addressdetails": 1, "limit": 5}
-                res = requests.get(nom_url, params=params, headers=headers, timeout=6)
-                if res.status_code == 200:
-                    for item in res.json():
-                        p_name = item.get("display_name", "").split(",")[0].strip()
-                        p_lat, p_lng = float(item["lat"]), float(item["lon"])
-                        dist = calculate_distance_km(lat, lng, p_lat, p_lng)
-
-                        if p_name.lower() not in seen_names and dist <= 12.0:
-                            seen_names.add(p_name.lower())
-                            real_transport.append({"name": p_name, "lat": p_lat, "lng": p_lng, "dist": round(dist, 2)})
-        except Exception:
-            pass
-
-    # Sort strictly by distance
     real_schools = sorted(real_schools, key=lambda x: x['dist'])
     real_transport = sorted(real_transport, key=lambda x: x['dist'])
 
@@ -334,32 +339,31 @@ if location_input.strip():
                 unsafe_allow_html=True
             )
 
-            # Display List of Real Names directly in UI
+            # Display real colleges & schools list
             if spatial_data['schools']:
                 st.markdown("**🏫 Schools & Colleges Nearby:**")
-                for s_item in spatial_data['schools'][:5]:
-                    st.write(f"- {s_item['name']} ({s_item['dist']} km)")
+                for s_item in spatial_data['schools'][:7]:
+                    st.write(f"- **{s_item['name']}** ({s_item['dist']} km)")
 
+            # Display real transport list
             if spatial_data['transports']:
-                st.markdown("**🚌 Public Transport Hubs Nearby:**")
+                st.markdown("**🚌 Transport Hubs Nearby:**")
                 for t_item in spatial_data['transports'][:5]:
-                    st.write(f"- {t_item['name']} ({t_item['dist']} km)")
+                    st.write(f"- **{t_item['name']}** ({t_item['dist']} km)")
 
         with map_col:
             lat = spatial_data['lat']
             lng = spatial_data['lng']
 
-            # Satellite Base Map
             m = folium.Map(
                 location=[lat, lng],
-                zoom_start=13,
+                zoom_start=12,
                 tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
                 attr="Esri World Imagery"
             )
 
-            # Outer Boundary Polygon Mask
             world_bounds = [[90, -180], [90, 180], [-90, 180], [-90, -180]]
-            hole_cutout = get_circle_points(lat, lng, radius_meters=2500)
+            hole_cutout = get_circle_points(lat, lng, radius_meters=3000)
 
             folium.Polygon(
                 locations=[world_bounds, hole_cutout],
@@ -379,7 +383,7 @@ if location_input.strip():
                 tooltip=spatial_data['address']
             ).add_to(m)
 
-            # 🚌 1. TRANSPORT MARKERS
+            # 🚌 Transport Markers
             for t_node in spatial_data['transports']:
                 folium.Marker(
                     location=[t_node['lat'], t_node['lng']],
@@ -387,7 +391,7 @@ if location_input.strip():
                     icon=folium.Icon(color="blue", icon="info-sign")
                 ).add_to(m)
 
-            # 🏫 2. SCHOOL & COLLEGE MARKERS
+            # 🏫 School & College Markers
             for s_node in spatial_data['schools']:
                 folium.Marker(
                     location=[s_node['lat'], s_node['lng']],
@@ -395,7 +399,7 @@ if location_input.strip():
                     icon=folium.Icon(color="orange", icon="star")
                 ).add_to(m)
 
-            st_folium(m, width="100%", height=420, returned_objects=[])
+            st_folium(m, width="100%", height=450, returned_objects=[])
 
         # ----------------------------------------------------
         # 5. USER INTENT & PREDICTION INPUTS
