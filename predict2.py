@@ -3,20 +3,20 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from geopy.geocoders import ArcGIS
+import folium
+from streamlit_folium import st_folium
 
 # Page Setup
 st.set_page_config(page_title="Real-Time House Price Predictor", page_icon="📍", layout="wide")
 st.title("📍 Real-Time House Price Predictor")
 
-# Custom CSS for integrated search bar layout
+# Custom CSS for compact search bar alignment
 st.markdown("""
     <style>
-    /* Remove padding inside search form */
     div[data-testid="stForm"] {
         border: none !important;
         padding: 0 !important;
     }
-    /* Vertically align input and button bottom edges */
     div[data-testid="column"] {
         display: flex;
         align-items: flex-end;
@@ -116,11 +116,7 @@ def get_location_data(address):
             addr_type = attributes.get('Addr_type', '') or attributes.get('Type', '')
 
             forbidden_types = [
-                'PointAddress', 
-                'StreetAddress', 
-                'StreetName', 
                 'StreetNameGroup', 
-                'Building', 
                 'POI', 
                 'Intersection', 
                 'Transit', 
@@ -151,7 +147,7 @@ def get_location_data(address):
 if "user_role" not in st.session_state:
     st.session_state.user_role = None
 
-# 4. Streamlit UI: Compact Search Container
+# 4. Streamlit UI: Compact Integrated Input & Search Bar
 st.subheader("1. Property Location")
 
 search_container, _ = st.columns([2, 3])
@@ -162,7 +158,7 @@ with search_container:
         with c_input:
             location_input = st.text_input(
                 "Property Location", 
-                placeholder="City, Town, or Pincode...",
+                placeholder="City, Locality, or Pincode...",
                 label_visibility="collapsed"
             )
         with c_btn:
@@ -174,7 +170,7 @@ if location_input.strip():
     spatial_data = get_location_data(location_input)
     
     if spatial_data:
-        # Green border styling for input
+        # Green border & background for valid location
         st.markdown(
             """
             <style>
@@ -195,7 +191,7 @@ if location_input.strip():
             spatial_data['lat'], spatial_data['lng']
         )
         
-        # Display Location Verification Box and Interactive Map Side-by-Side
+        # Display Location Box & Satellite Map Side-by-Side
         loc_col, map_col = st.columns([1, 1])
 
         with loc_col:
@@ -212,14 +208,22 @@ if location_input.strip():
             )
 
         with map_col:
-            # Map DataFrame for st.map
-            map_data = pd.DataFrame([{
-                'lat': spatial_data['lat'],
-                'lon': spatial_data['lng']
-            }])
+            # High-resolution Satellite Map using Esri World Imagery
+            m = folium.Map(
+                location=[spatial_data['lat'], spatial_data['lng']],
+                zoom_start=17,
+                tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+                attr="Esri World Imagery"
+            )
             
-            # Display native Streamlit Map
-            st.map(map_data, zoom=11, size=20)
+            folium.Marker(
+                [spatial_data['lat'], spatial_data['lng']],
+                popup=spatial_data['address'],
+                tooltip="Selected Location",
+                icon=folium.Icon(color="red", icon="home", prefix="fa")
+            ).add_to(m)
+
+            st_folium(m, width="100%", height=300, returned_objects=[])
 
         # 5. User Intent Selection (Own vs Rent)
         st.subheader("2. Select Your Intent")
@@ -233,7 +237,7 @@ if location_input.strip():
             if st.button("🔑 Rent", use_container_width=True):
                 st.session_state.user_role = "Rent"
 
-        # 6. Feature Inputs Pop Out Based on Button Clicked
+        # 6. Feature Inputs Based on Button Clicked
         if st.session_state.user_role == "Own":
             st.markdown("---")
             st.subheader("3. Enter Property Details (Own)")
@@ -285,7 +289,7 @@ if location_input.strip():
                     extra_bhk_cost = 4500
                     bathroom_cost = 1500
                     age_depreciation = 100
-                else:  # Tier 3
+                else:
                     base_1bhk_rent = 4000
                     extra_bhk_cost = 2500
                     bathroom_cost = 1000
@@ -304,6 +308,7 @@ if location_input.strip():
                 st.success(f"### Estimated Monthly Rent: **{formatted_rent}**")
 
     else:
+        # Red border styling for invalid location
         st.markdown(
             """
             <style>
@@ -316,4 +321,4 @@ if location_input.strip():
             """,
             unsafe_allow_html=True
         )
-        st.error("❌ **Invalid Input:** Please enter a valid City name, Town name, or a 6-digit Indian Pincode. Street names, stops, and specific buildings are not allowed.")
+        st.error("❌ **Invalid Input:** Please enter a valid City, Locality, or Pincode.")
