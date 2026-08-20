@@ -1,8 +1,8 @@
 import math
-import urllib.parse
 import numpy as np
 import pandas as pd
 import streamlit as st
+import requests
 from geopy.geocoders import ArcGIS
 import folium
 from streamlit_folium import st_folium
@@ -25,19 +25,6 @@ st.markdown("""
     }
     </style>
 """, unsafe_allow_html=True)
-
-# Visual preview photos for map popups
-TRANSPORT_IMAGES = [
-    "https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?w=400&q=80",  # Bus Terminal
-    "https://images.unsplash.com/photo-1517649763962-0c623266010b?w=400&q=80",  # Metro Station
-    "https://images.unsplash.com/photo-1570125909232-eb263c188f7e?w=400&q=80",  # City Bus Stop
-]
-
-SCHOOL_IMAGES = [
-    "https://images.unsplash.com/photo-1580582932707-520aed937b7b?w=400&q=80",  # School Building
-    "https://images.unsplash.com/photo-1523050854058-8df90110c9f1?w=400&q=80",  # Campus
-    "https://images.unsplash.com/photo-1562774053-701939374585?w=400&q=80",  # Academy
-]
 
 # ----------------------------------------------------
 # 2. CITY ANCHORS & HELPER FUNCTIONS
@@ -127,52 +114,89 @@ geolocator = get_geolocator()
 
 @st.cache_data(show_spinner=False)
 def fetch_real_nearby_pois(address, lat, lng):
-    """Queries ArcGIS database for real schools & transport stations with clean names."""
-    geo = ArcGIS(timeout=10)
+    """Fetches real school names and transport hubs around coordinates."""
     real_schools = []
     real_transport = []
 
     loc_name = address.split(',')[0].strip()
 
-    # Query Real Schools
+    # 1. Primary: Overpass API query for real tagged schools
     try:
-        school_candidates = geo.geocode(f"School, {address}", exactly_one=False, max_results=6) or []
-        for item in school_candidates:
-            raw_addr_parts = item.address.split(',')
-            # Extract main name from the first segment of the returned address
-            name = raw_addr_parts[0].strip()
-            
-            # If name is generic or missing "School", format cleanly
-            if "school" not in name.lower() and "academy" not in name.lower() and "vidyalaya" not in name.lower():
-                name = f"{name} School"
+        overpass_url = "https://overpass-api.de/api/interpreter"
+        overpass_query = f"""
+        [out:json][timeout:10];
+        (
+          node["amenity"="school"](around:2500,{lat},{lng});
+          way["amenity"="school"](around:2500,{lat},{lng});
+        );
+        out center 10;
+        """
+        response = requests.post(overpass_url, data={'data': overpass_query}, timeout=6)
+        if response.status_code == 200:
+            data = response.json()
+            elements = data.get("elements", [])
+            seen_names = set()
+
+            for elem in elements:
+                tags = elem.get("tags", {})
+                s_name = tags.get("name")
+                if not s_name:
+                    s_name = tags.get("name:en")
+
+                if s_name and s_name not in seen_names:
+                    seen_names.add(s_name)
+                    if "lat" in elem and "lon" in elem:
+                        s_lat, s_lng = elem["lat"], elem["lon"]
+                    elif "center" in elem:
+                        s_lat, s_lng = elem["center"]["lat"], elem["center"]["lon"]
+                    else:
+                        continue
+
+                    dist = calculate_distance_km(lat, lng, s_lat, s_lng)
+                    real_schools.append({
+                        "name": s_name,
+                        "lat": s_lat,
+                        "lng": s_lng,
+                        "dist": round(dist, 2)
+                    })
+    except Exception:
+        pass
+
+    # 2. Secondary: Geocoder search fallback if Overpass yields empty results
+    if not real_schools:
+        try:
+            geo = ArcGIS(timeout=10)
+            candidates = geo.geocode(f"School, {address}", exactly_one=False, max_results=5) or []
+            for item in candidates:
+                s_name = item.address.split(',')[0].strip()
+                if "school" not in s_name.lower() and "academy" not in s_name.lower() and "vidyalaya" not in s_name.lower():
+                    s_name = f"{s_name} School"
                 
-            dist = calculate_distance_km(lat, lng, item.latitude, item.longitude)
-            if dist <= 4.5:
+                dist = calculate_distance_km(lat, lng, item.latitude, item.longitude)
                 real_schools.append({
-                    "name": name,
-                    "address": item.address,
+                    "name": s_name,
                     "lat": item.latitude,
                     "lng": item.longitude,
                     "dist": round(dist, 2)
                 })
-    except Exception:
-        pass
+        except Exception:
+            pass
 
-    # Query Real Transport Stations
+    # 3. Transport Hubs Query via ArcGIS
     try:
-        bus_candidates = geo.geocode(f"Bus Station, {address}", exactly_one=False, max_results=4) or []
-        metro_candidates = geo.geocode(f"Metro Station, {address}", exactly_one=False, max_results=4) or []
+        geo = ArcGIS(timeout=10)
+        bus_candidates = geo.geocode(f"Bus Station, {address}", exactly_one=False, max_results=3) or []
+        metro_candidates = geo.geocode(f"Metro Station, {address}", exactly_one=False, max_results=3) or []
         combined_transport = (bus_candidates or []) + (metro_candidates or [])
 
-        seen_names = set()
+        seen_t_names = set()
         for item in combined_transport:
-            name = item.address.split(',')[0].strip()
+            t_name = item.address.split(',')[0].strip()
             dist = calculate_distance_km(lat, lng, item.latitude, item.longitude)
-            if name and name not in seen_names and dist <= 4.0:
-                seen_names.add(name)
+            if t_name and t_name not in seen_t_names and dist <= 4.0:
+                seen_t_names.add(t_name)
                 real_transport.append({
-                    "name": name,
-                    "address": item.address,
+                    "name": t_name,
                     "lat": item.latitude,
                     "lng": item.longitude,
                     "dist": round(dist, 2)
@@ -180,21 +204,19 @@ def fetch_real_nearby_pois(address, lat, lng):
     except Exception:
         pass
 
-    # Fallback Guarantee: Ensure pins always show with a valid name
+    # Fallback Guarantee if no POIs returned
     if not real_schools:
         real_schools = [
             {
                 "name": f"{loc_name} High School",
-                "address": f"Near Main Road, {address}",
-                "lat": lat + 0.0035,
-                "lng": lng + 0.0028,
+                "lat": lat + 0.0032,
+                "lng": lng + 0.0025,
                 "dist": 0.45
             },
             {
                 "name": f"{loc_name} Public Academy",
-                "address": f"Station Road, {address}",
-                "lat": lat - 0.0022,
-                "lng": lng - 0.0041,
+                "lat": lat - 0.0025,
+                "lng": lng - 0.0038,
                 "dist": 0.62
             }
         ]
@@ -202,10 +224,9 @@ def fetch_real_nearby_pois(address, lat, lng):
     if not real_transport:
         real_transport = [
             {
-                "name": f"{loc_name} Central Bus Stop",
-                "address": f"Main Cross Road, {address}",
-                "lat": lat - 0.0031,
-                "lng": lng + 0.0038,
+                "name": f"{loc_name} Bus Station",
+                "lat": lat - 0.0030,
+                "lng": lng + 0.0035,
                 "dist": 0.51
             }
         ]
@@ -322,7 +343,7 @@ if location_input.strip():
             lat = spatial_data['lat']
             lng = spatial_data['lng']
 
-            # High-resolution Satellite Map using Esri World Imagery
+            # Satellite Base Map
             m = folium.Map(
                 location=[lat, lng],
                 zoom_start=15,
@@ -330,11 +351,11 @@ if location_input.strip():
                 attr="Esri World Imagery"
             )
 
-            # Outer boundary polygon covering world map
+            # Outer Boundary Polygon Mask
             world_bounds = [[90, -180], [90, 180], [-90, 180], [-90, -180]]
             hole_cutout = get_circle_points(lat, lng, radius_meters=850)
 
-            # Mask: Shaded outside, clear satellite inside searched area
+            # Mask: Shaded outside area
             folium.Polygon(
                 locations=[world_bounds, hole_cutout],
                 color="#000000",
@@ -345,7 +366,7 @@ if location_input.strip():
                 tooltip="Outside Focus Area"
             ).add_to(m)
 
-            # Green boundary outline for searched area
+            # Green boundary circle outlining searched location (NO RED MARKER)
             folium.PolyLine(
                 locations=hole_cutout + [hole_cutout[0]],
                 color="#28a745",
@@ -355,78 +376,23 @@ if location_input.strip():
             ).add_to(m)
 
             # ----------------------------------------------------
-            # 📌 1. SEARCHED PROPERTY LOCATION MARKER (RED PIN)
+            # 🚌 1. TRANSPORT MARKERS (BLUE PINS)
             # ----------------------------------------------------
-            property_popup = f"""
-            <div style="width: 210px; font-family: sans-serif;">
-                <h4 style="margin:0 0 5px 0; color:#d9534f;">🏠 Searched Property</h4>
-                <p style="margin:0; font-size:12px; color:#333;">{spatial_data['address']}</p>
-            </div>
-            """
-            folium.Marker(
-                location=[lat, lng],
-                popup=folium.Popup(property_popup, max_width=240),
-                tooltip=folium.Tooltip("🏠 Property Location", permanent=True, direction="top"),
-                icon=folium.Icon(color="red", icon="home")
-            ).add_to(m)
-
-            # ----------------------------------------------------
-            # 🚌 2. REAL TRANSPORT MARKERS (BLUE PINS)
-            # ----------------------------------------------------
-            for i, t_node in enumerate(spatial_data['transports']):
-                img_url = TRANSPORT_IMAGES[i % len(TRANSPORT_IMAGES)]
+            for t_node in spatial_data['transports']:
                 place_name = t_node['name']
-                full_addr = t_node['address']
-                dist_km = t_node['dist']
-
-                gmaps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(place_name + ' ' + full_addr)}"
-
-                popup_html = f"""
-                <div style="width: 230px; font-family: sans-serif;">
-                    <img src="{img_url}" style="width: 100%; height: 100px; object-fit: cover; border-radius: 6px; margin-bottom: 6px;" />
-                    <h4 style="margin: 0 0 4px 0; color: #1a202c; font-size: 13px;">🚌 {place_name}</h4>
-                    <p style="margin: 0 0 4px 0; font-size: 11px; color: #4a5568;">📍 {full_addr}</p>
-                    <p style="margin: 0 0 6px 0; font-size: 11px; color: #2b6cb0; font-weight: bold;">📏 Distance: {dist_km} km away</p>
-                    <a href="{gmaps_url}" target="_blank" style="display: block; text-align: center; background: #3182ce; color: white; text-decoration: none; padding: 5px; border-radius: 4px; font-size: 11px; font-weight: bold;">
-                        📸 View Real Photos on Google Maps
-                    </a>
-                </div>
-                """
-
                 folium.Marker(
                     location=[t_node['lat'], t_node['lng']],
-                    popup=folium.Popup(popup_html, max_width=250),
-                    tooltip=folium.Tooltip(f"🚌 {place_name}", permanent=False),
+                    tooltip=folium.Tooltip(f"🚌 {place_name}", permanent=True, direction="top"),
                     icon=folium.Icon(color="blue", icon="info-sign")
                 ).add_to(m)
 
             # ----------------------------------------------------
-            # 🏫 3. REAL SCHOOL MARKERS WITH DISPLAY NAMES (ORANGE PINS)
+            # 🏫 2. REAL SCHOOL MARKERS WITH NAMES (ORANGE PINS)
             # ----------------------------------------------------
-            for i, s_node in enumerate(spatial_data['schools']):
-                img_url = SCHOOL_IMAGES[i % len(SCHOOL_IMAGES)]
+            for s_node in spatial_data['schools']:
                 place_name = s_node['name']
-                full_addr = s_node['address']
-                dist_km = s_node['dist']
-
-                gmaps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(place_name + ' ' + full_addr)}"
-
-                popup_html = f"""
-                <div style="width: 230px; font-family: sans-serif;">
-                    <img src="{img_url}" style="width: 100%; height: 100px; object-fit: cover; border-radius: 6px; margin-bottom: 6px;" />
-                    <h4 style="margin: 0 0 4px 0; color: #1a202c; font-size: 13px;">🏫 {place_name}</h4>
-                    <p style="margin: 0 0 4px 0; font-size: 11px; color: #4a5568;">📍 {full_addr}</p>
-                    <p style="margin: 0 0 6px 0; font-size: 11px; color: #c05621; font-weight: bold;">📏 Distance: {dist_km} km away</p>
-                    <a href="{gmaps_url}" target="_blank" style="display: block; text-align: center; background: #dd6b20; color: white; text-decoration: none; padding: 5px; border-radius: 4px; font-size: 11px; font-weight: bold;">
-                        📸 View Real Photos on Google Maps
-                    </a>
-                </div>
-                """
-
-                # permanent=True shows the school name permanently right above/next to the marker icon
                 folium.Marker(
                     location=[s_node['lat'], s_node['lng']],
-                    popup=folium.Popup(popup_html, max_width=250),
                     tooltip=folium.Tooltip(f"🏫 {place_name}", permanent=True, direction="top"),
                     icon=folium.Icon(color="orange", icon="star")
                 ).add_to(m)
