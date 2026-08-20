@@ -84,6 +84,21 @@ def estimate_location_details(lat, lng):
     return final_sqft_price, market_label, tier
 
 
+def get_circle_points(lat, lng, radius_meters=700, num_points=64):
+    """Generates coordinate ring to cut a hole in the outer mask."""
+    points = []
+    lat_rad = math.radians(lat)
+    for i in range(num_points):
+        angle = 2 * math.pi * i / num_points
+        dy = radius_meters * math.sin(angle)
+        dx = radius_meters * math.cos(angle)
+        
+        point_lat = lat + (dy / 111000.0)
+        point_lng = lng + (dx / (111000.0 * math.cos(lat_rad)))
+        points.append([point_lat, point_lng])
+    return points
+
+
 # 2. Geocoder Setup
 @st.cache_resource
 def get_geolocator():
@@ -127,8 +142,8 @@ def get_location_data(address):
                 return None
 
             lat, lng = location.latitude, location.longitude
-            public_transport_count = int(abs(hash(f"{lat:.2f},{lng:.2f}")) % 10) + 1
-            school_count = int(abs(hash(f"{lat:.3f},{lng:.3f}")) % 12) + 1
+            public_transport_count = int(abs(hash(f"{lat:.2f},{lng:.2f}")) % 6) + 2
+            school_count = int(abs(hash(f"{lat:.3f},{lng:.3f}")) % 6) + 2
 
             return {
                 "lat": lat,
@@ -208,28 +223,70 @@ if location_input.strip():
             )
 
         with map_col:
+            lat = spatial_data['lat']
+            lng = spatial_data['lng']
+
             # High-resolution Satellite Map using Esri World Imagery
             m = folium.Map(
-                location=[spatial_data['lat'], spatial_data['lng']],
+                location=[lat, lng],
                 zoom_start=15,
                 tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
                 attr="Esri World Imagery"
             )
-            
-            # Area boundary outline replaces the marker pin
-            folium.Circle(
-                location=[spatial_data['lat'], spatial_data['lng']],
-                radius=800,
-                color="#28a745",
-                weight=3,
+
+            # Outer boundary polygon covering world map
+            world_bounds = [[90, -180], [90, 180], [-90, 180], [-90, -180]]
+            hole_cutout = get_circle_points(lat, lng, radius_meters=750)
+
+            # Mask: Shaded outside, normal clear satellite inside searched area
+            folium.Polygon(
+                locations=[world_bounds, hole_cutout],
+                color="#000000",
+                weight=1,
                 fill=True,
-                fill_color="#28a745",
-                fill_opacity=0.2,
-                popup=spatial_data['address'],
-                tooltip="Searched Area Boundary"
+                fill_color="#111111",
+                fill_opacity=0.6,
+                tooltip="Outside Area"
             ).add_to(m)
 
-            st_folium(m, width="100%", height=300, returned_objects=[])
+            # Green boundary outline for searched area
+            folium.PolyLine(
+                locations=hole_cutout + [hole_cutout[0]],
+                color="#28a745",
+                weight=3,
+                opacity=0.9,
+                tooltip=spatial_data['address']
+            ).add_to(m)
+
+            # Add Transit Hub Markers (Blue Bus Icons)
+            for i in range(spatial_data['public_transport_count']):
+                angle = (i * 137.5) * (math.pi / 180)
+                dist = 180 + ((i * 123) % 450)
+                d_lat = (dist * math.sin(angle)) / 111000.0
+                d_lng = (dist * math.cos(angle)) / (111000.0 * math.cos(math.radians(lat)))
+                
+                folium.Marker(
+                    [lat + d_lat, lng + d_lng],
+                    popup=f"Transit Stop / Hub #{i+1}",
+                    tooltip="Transit Station",
+                    icon=folium.Icon(color="blue", icon="bus", prefix="fa")
+                ).add_to(m)
+
+            # Add School Markers (Orange Graduation Cap Icons)
+            for i in range(spatial_data['school_count']):
+                angle = (i * 211.3 + 60) * (math.pi / 180)
+                dist = 220 + ((i * 97) % 420)
+                d_lat = (dist * math.sin(angle)) / 111000.0
+                d_lng = (dist * math.cos(angle)) / (111000.0 * math.cos(math.radians(lat)))
+
+                folium.Marker(
+                    [lat + d_lat, lng + d_lng],
+                    popup=f"School / Educational Inst. #{i+1}",
+                    tooltip="School / Institution",
+                    icon=folium.Icon(color="orange", icon="graduation-cap", prefix="fa")
+                ).add_to(m)
+
+            st_folium(m, width="100%", height=320, returned_objects=[])
 
         # 5. User Intent Selection (Own vs Rent)
         st.subheader("2. Select Your Intent")
