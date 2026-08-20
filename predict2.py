@@ -209,8 +209,6 @@ if location_input.strip():
         # Display Location Box & Satellite Map Side-by-Side
         loc_col, map_col = st.columns([1, 1])
 
-        short_address = spatial_data['address'].split(',')[0]
-
         with loc_col:
             st.markdown(
                 f"""
@@ -248,7 +246,7 @@ if location_input.strip():
                 fill=True,
                 fill_color="#111111",
                 fill_opacity=0.6,
-                tooltip="Outside Area"
+                tooltip=None
             ).add_to(m)
 
             # Green boundary outline for searched area
@@ -257,36 +255,30 @@ if location_input.strip():
                 color="#28a745",
                 weight=3,
                 opacity=0.9,
-                tooltip=spatial_data['address']
+                tooltip=None
             ).add_to(m)
 
-            # Add Transport Location Markers (Blue Bus Icons) - WITHOUT POPUPS
+            # Add Transport Location Markers (Blue Bus Icons) - NO POPUP / NO TOOLTIP
             for i in range(spatial_data['public_transport_count']):
                 angle = (i * 137.5) * (math.pi / 180)
                 dist = 180 + ((i * 123) % 450)
                 d_lat = (dist * math.sin(angle)) / 111000.0
                 d_lng = (dist * math.cos(angle)) / (111000.0 * math.cos(math.radians(lat)))
-                
-                place_title = f"Transport Hub #{i+1}"
 
                 folium.Marker(
                     [lat + d_lat, lng + d_lng],
-                    tooltip=place_title,
                     icon=folium.Icon(color="blue", icon="bus", prefix="fa")
                 ).add_to(m)
 
-            # Add School Markers (Orange Graduation Cap Icons) - WITHOUT POPUPS
+            # Add School Markers (Orange Graduation Cap Icons) - NO POPUP / NO TOOLTIP
             for i in range(spatial_data['school_count']):
                 angle = (i * 211.3 + 60) * (math.pi / 180)
                 dist = 220 + ((i * 97) % 420)
                 d_lat = (dist * math.sin(angle)) / 111000.0
                 d_lng = (dist * math.cos(angle)) / (111000.0 * math.cos(math.radians(lat)))
 
-                place_title = f"School/College #{i+1}"
-
                 folium.Marker(
                     [lat + d_lat, lng + d_lng],
-                    tooltip=place_title,
                     icon=folium.Icon(color="orange", icon="graduation-cap", prefix="fa")
                 ).add_to(m)
 
