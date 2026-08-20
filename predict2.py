@@ -1,4 +1,5 @@
 import math
+import urllib.parse
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -24,19 +25,17 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Sample images for location popouts
+# Curated high-quality architectural photos for UI representation
 TRANSPORT_IMAGES = [
     "https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?w=400&q=80",  # Bus Terminal
-    "https://images.unsplash.com/photo-1517649763962-0c623266010b?w=400&q=80",  # Metro/Train Station
+    "https://images.unsplash.com/photo-1517649763962-0c623266010b?w=400&q=80",  # Metro Station
     "https://images.unsplash.com/photo-1570125909232-eb263c188f7e?w=400&q=80",  # City Bus Stop
-    "https://images.unsplash.com/photo-1557223562-6c77ef16210f?w=400&q=80"   # Transport Stand
 ]
 
 SCHOOL_IMAGES = [
     "https://images.unsplash.com/photo-1580582932707-520aed937b7b?w=400&q=80",  # School Building
     "https://images.unsplash.com/photo-1523050854058-8df90110c9f1?w=400&q=80",  # Campus
     "https://images.unsplash.com/photo-1562774053-701939374585?w=400&q=80",  # Academy
-    "https://images.unsplash.com/photo-1509062522246-3755977927d7?w=400&q=80"   # Public School
 ]
 
 # 1. Tier-1 & Tier-2 City Anchors
@@ -99,7 +98,7 @@ def estimate_location_details(lat, lng):
     return final_sqft_price, market_label, tier
 
 
-def get_circle_points(lat, lng, radius_meters=750, num_points=64):
+def get_circle_points(lat, lng, radius_meters=850, num_points=64):
     """Generates coordinate ring to cut a hole in the outer mask."""
     points = []
     lat_rad = math.radians(lat)
@@ -122,7 +121,57 @@ def get_geolocator():
 geolocator = get_geolocator()
 
 
-# 3. Location Validation Function
+# 3. Fetch Real Real-World POIs (Schools & Transport Locations)
+@st.cache_data(show_spinner=False)
+def fetch_real_nearby_pois(address, lat, lng):
+    """Queries ArcGIS POI database for genuine schools and transport locations in the locality."""
+    geo = ArcGIS(timeout=10)
+    real_schools = []
+    real_transport = []
+
+    # Query Real Schools
+    try:
+        school_candidates = geo.geocode(f"School, {address}", exactly_one=False, max_results=6) or []
+        for item in school_candidates:
+            name = item.address.split(',')[0].strip()
+            dist = calculate_distance_km(lat, lng, item.latitude, item.longitude)
+            if name and dist <= 2.5:
+                real_schools.append({
+                    "name": name,
+                    "address": item.address,
+                    "lat": item.latitude,
+                    "lng": item.longitude,
+                    "dist": round(dist, 2)
+                })
+    except Exception:
+        pass
+
+    # Query Real Transport Locations (Metro & Bus Stations)
+    try:
+        bus_candidates = geo.geocode(f"Bus Station, {address}", exactly_one=False, max_results=4) or []
+        metro_candidates = geo.geocode(f"Metro Station, {address}", exactly_one=False, max_results=4) or []
+        combined_transport = (bus_candidates or []) + (metro_candidates or [])
+
+        seen_names = set()
+        for item in combined_transport:
+            name = item.address.split(',')[0].strip()
+            dist = calculate_distance_km(lat, lng, item.latitude, item.longitude)
+            if name and name not in seen_names and dist <= 3.0:
+                seen_names.add(name)
+                real_transport.append({
+                    "name": name,
+                    "address": item.address,
+                    "lat": item.latitude,
+                    "lng": item.longitude,
+                    "dist": round(dist, 2)
+                })
+    except Exception:
+        pass
+
+    return real_schools, real_transport
+
+
+# 4. Location Validation Function
 @st.cache_data(show_spinner=False)
 def get_location_data(address):
     if not address or len(address.strip()) < 2:
@@ -157,15 +206,18 @@ def get_location_data(address):
                 return None
 
             lat, lng = location.latitude, location.longitude
-            public_transport_count = int(abs(hash(f"{lat:.2f},{lng:.2f}")) % 5) + 2
-            school_count = int(abs(hash(f"{lat:.3f},{lng:.3f}")) % 5) + 2
+
+            # Fetch real POIs
+            schools, transports = fetch_real_nearby_pois(location.address, lat, lng)
 
             return {
                 "lat": lat,
                 "lng": lng,
                 "address": location.address,
-                "public_transport_count": public_transport_count,
-                "school_count": school_count,
+                "schools": schools,
+                "transports": transports,
+                "public_transport_count": max(len(transports), 1),
+                "school_count": max(len(schools), 1)
             }
     except Exception:
         pass
@@ -177,7 +229,7 @@ def get_location_data(address):
 if "user_role" not in st.session_state:
     st.session_state.user_role = None
 
-# 4. Streamlit UI: Compact Search Container
+# Streamlit UI: Compact Search Container
 st.subheader("1. Property Location")
 
 search_container, _ = st.columns([2, 3])
@@ -232,8 +284,8 @@ if location_input.strip():
                 <div style="background-color: #d4edda; color: #155724; padding: 16px; border-radius: 8px; border: 1px solid #c3e6cb; margin-bottom: 15px;">
                     ✅ <strong>{spatial_data['address']}</strong><br><br>
                     📍 <strong>Classification:</strong> Tier {loc_tier} ({market_label})<br>
-                    🚌 <strong>Nearby Transport Locations:</strong> {spatial_data['public_transport_count']}<br>
-                    🏫 <strong>Nearby Schools:</strong> {spatial_data['school_count']}
+                    🚌 <strong>Real Transport Hubs Found:</strong> {len(spatial_data['transports'])}<br>
+                    🏫 <strong>Real Schools Found:</strong> {len(spatial_data['schools'])}
                 </div>
                 """, 
                 unsafe_allow_html=True
@@ -253,7 +305,7 @@ if location_input.strip():
 
             # Outer boundary polygon covering world map
             world_bounds = [[90, -180], [90, 180], [-90, 180], [-90, -180]]
-            hole_cutout = get_circle_points(lat, lng, radius_meters=750)
+            hole_cutout = get_circle_points(lat, lng, radius_meters=850)
 
             # Mask: Shaded outside, normal clear satellite inside searched area
             folium.Polygon(
@@ -275,55 +327,61 @@ if location_input.strip():
                 tooltip=spatial_data['address']
             ).add_to(m)
 
-            # Add Transport Location Markers (Blue Bus Icons) with Image Popouts
-            for i in range(spatial_data['public_transport_count']):
-                angle = (i * 137.5) * (math.pi / 180)
-                dist = 180 + ((i * 123) % 450)
-                d_lat = (dist * math.sin(angle)) / 111000.0
-                d_lng = (dist * math.cos(angle)) / (111000.0 * math.cos(math.radians(lat)))
-                
+            # Add Real Transport Locations with Dynamic Google Maps Photos Link
+            for i, t_node in enumerate(spatial_data['transports']):
                 img_url = TRANSPORT_IMAGES[i % len(TRANSPORT_IMAGES)]
-                place_title = f"Transport Hub #{i+1} ({short_address})"
+                place_name = t_node['name']
+                full_addr = t_node['address']
+                dist_km = t_node['dist']
+
+                # Google Maps query string to view real photos & reviews
+                gmaps_search_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(place_name + ' ' + full_addr)}"
 
                 popup_html = f"""
-                <div style="width: 220px; font-family: sans-serif;">
-                    <img src="{img_url}" style="width: 100%; height: 120px; object-fit: cover; border-radius: 6px; margin-bottom: 8px;" />
-                    <h4 style="margin: 0 0 4px 0; color: #1a202c; font-size: 14px;">🚌 {place_title}</h4>
-                    <p style="margin: 0; font-size: 11px; color: #4a5568;">📍 Public Transport Hub serving {short_address} zone.</p>
-                    <span style="display: inline-block; margin-top: 6px; padding: 2px 8px; background: #ebf8ff; color: #2b6cb0; border-radius: 4px; font-size: 10px; font-weight: bold;">Public Transport</span>
+                <div style="width: 240px; font-family: sans-serif; padding: 2px;">
+                    <img src="{img_url}" style="width: 100%; height: 110px; object-fit: cover; border-radius: 6px; margin-bottom: 8px;" />
+                    <h4 style="margin: 0 0 4px 0; color: #1a202c; font-size: 13px;">🚌 {place_name}</h4>
+                    <p style="margin: 0 0 6px 0; font-size: 11px; color: #4a5568; line-height: 1.3;">📍 {full_addr}</p>
+                    <p style="margin: 0 0 8px 0; font-size: 10px; color: #2b6cb0; font-weight: bold;">📏 Distance: {dist_km} km away</p>
+                    <a href="{gmaps_search_url}" target="_blank" style="display: block; text-align: center; background: #3182ce; color: white; text-decoration: none; padding: 6px 10px; border-radius: 4px; font-size: 11px; font-weight: bold;">
+                        📸 View Real Photos on Google Maps
+                    </a>
                 </div>
                 """
 
                 folium.Marker(
-                    [lat + d_lat, lng + d_lng],
-                    popup=folium.Popup(popup_html, max_width=250),
-                    tooltip=f"Click to view: {place_title}",
+                    [t_node['lat'], t_node['lng']],
+                    popup=folium.Popup(popup_html, max_width=260),
+                    tooltip=f"Transport: {place_name}",
                     icon=folium.Icon(color="blue", icon="bus", prefix="fa")
                 ).add_to(m)
 
-            # Add School Markers (Orange Graduation Cap Icons) with Image Popouts
-            for i in range(spatial_data['school_count']):
-                angle = (i * 211.3 + 60) * (math.pi / 180)
-                dist = 220 + ((i * 97) % 420)
-                d_lat = (dist * math.sin(angle)) / 111000.0
-                d_lng = (dist * math.cos(angle)) / (111000.0 * math.cos(math.radians(lat)))
-
+            # Add Real School Markers with Dynamic Google Maps Photos Link
+            for i, s_node in enumerate(spatial_data['schools']):
                 img_url = SCHOOL_IMAGES[i % len(SCHOOL_IMAGES)]
-                place_title = f"School #{i+1} ({short_address})"
+                place_name = s_node['name']
+                full_addr = s_node['address']
+                dist_km = s_node['dist']
+
+                # Google Maps query string to view real photos & reviews
+                gmaps_search_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(place_name + ' ' + full_addr)}"
 
                 popup_html = f"""
-                <div style="width: 220px; font-family: sans-serif;">
-                    <img src="{img_url}" style="width: 100%; height: 120px; object-fit: cover; border-radius: 6px; margin-bottom: 8px;" />
-                    <h4 style="margin: 0 0 4px 0; color: #1a202c; font-size: 14px;">🏫 {place_title}</h4>
-                    <p style="margin: 0; font-size: 11px; color: #4a5568;">📍 Educational campus located in {short_address}.</p>
-                    <span style="display: inline-block; margin-top: 6px; padding: 2px 8px; background: #feebc8; color: #c05621; border-radius: 4px; font-size: 10px; font-weight: bold;">Educational Institution</span>
+                <div style="width: 240px; font-family: sans-serif; padding: 2px;">
+                    <img src="{img_url}" style="width: 100%; height: 110px; object-fit: cover; border-radius: 6px; margin-bottom: 8px;" />
+                    <h4 style="margin: 0 0 4px 0; color: #1a202c; font-size: 13px;">🏫 {place_name}</h4>
+                    <p style="margin: 0 0 6px 0; font-size: 11px; color: #4a5568; line-height: 1.3;">📍 {full_addr}</p>
+                    <p style="margin: 0 0 8px 0; font-size: 10px; color: #c05621; font-weight: bold;">📏 Distance: {dist_km} km away</p>
+                    <a href="{gmaps_search_url}" target="_blank" style="display: block; text-align: center; background: #dd6b20; color: white; text-decoration: none; padding: 6px 10px; border-radius: 4px; font-size: 11px; font-weight: bold;">
+                        📸 View Real Photos on Google Maps
+                    </a>
                 </div>
                 """
 
                 folium.Marker(
-                    [lat + d_lat, lng + d_lng],
-                    popup=folium.Popup(popup_html, max_width=250),
-                    tooltip=f"Click to view: {place_title}",
+                    [s_node['lat'], s_node['lng']],
+                    popup=folium.Popup(popup_html, max_width=260),
+                    tooltip=f"School: {place_name}",
                     icon=folium.Icon(color="orange", icon="graduation-cap", prefix="fa")
                 ).add_to(m)
 
