@@ -88,7 +88,7 @@ def estimate_location_details(lat, lng):
     return final_sqft_price, market_label, tier
 
 
-def get_circle_points(lat, lng, radius_meters=850, num_points=64):
+def get_circle_points(lat, lng, radius_meters=1500, num_points=64):
     points = []
     lat_rad = math.radians(lat)
     for i in range(num_points):
@@ -103,7 +103,7 @@ def get_circle_points(lat, lng, radius_meters=850, num_points=64):
 
 
 # ----------------------------------------------------
-# 3. GEOCODING & ADVANCED POI RETRIEVAL
+# 3. REAL POI RETRIEVAL VIA MULTI-SOURCE GEOCODING
 # ----------------------------------------------------
 @st.cache_resource
 def get_geolocator():
@@ -114,49 +114,36 @@ geolocator = get_geolocator()
 
 @st.cache_data(show_spinner=False)
 def fetch_real_nearby_pois(address, lat, lng):
-    """Fetches real school names and transport hubs within 3.5km."""
+    """Retrieves verified real schools and transit locations directly via multi-query geocoding."""
     real_schools = []
     real_transport = []
     seen_names = set()
 
-    headers = {'User-Agent': 'HousePricePredictorApp/2.0 (Contact: user@app.com)'}
+    clean_loc = address.split(',')[0].strip()
 
-    # 1. OVERPASS API QUERY (Nodes, Ways, and Relations)
+    # 1. Primary Query: Nominatim OpenStreetMap Search for Real Registered Schools
     try:
-        overpass_url = "https://overpass-api.de/api/interpreter"
-        # Increased radius to 3500m & included multiple educational tags
-        overpass_query = f"""
-        [out:json][timeout:15];
-        (
-          nwr["amenity"="school"](around:3500,{lat},{lng});
-          nwr["amenity"="college"](around:3500,{lat},{lng});
-          nwr["building"="school"](around:3500,{lat},{lng});
-        );
-        out center 15;
-        """
-        response = requests.post(overpass_url, data={'data': overpass_query}, headers=headers, timeout=8)
-        
-        if response.status_code == 200:
-            data = response.json()
-            elements = data.get("elements", [])
+        url = "https://nominatim.openstreetmap.org/search"
+        params = {
+            "q": f"school in {clean_loc}",
+            "format": "json",
+            "addressdetails": 1,
+            "limit": 10
+        }
+        headers = {"User-Agent": "HousePricePredictorApp/2.0"}
+        res = requests.get(url, params=params, headers=headers, timeout=6)
+        if res.status_code == 200:
+            data = res.json()
+            for item in data:
+                name = item.get("display_name", "").split(",")[0].strip()
+                s_lat = float(item["lat"])
+                s_lng = float(item["lon"])
+                dist = calculate_distance_km(lat, lng, s_lat, s_lng)
 
-            for elem in elements:
-                tags = elem.get("tags", {})
-                s_name = tags.get("name") or tags.get("name:en") or tags.get("official_name")
-
-                if s_name and s_name.strip() not in seen_names:
-                    # Get Lat/Lng from center or node
-                    if "center" in elem:
-                        s_lat, s_lng = elem["center"]["lat"], elem["center"]["lon"]
-                    elif "lat" in elem and "lon" in elem:
-                        s_lat, s_lng = elem["lat"], elem["lon"]
-                    else:
-                        continue
-
-                    dist = calculate_distance_km(lat, lng, s_lat, s_lng)
-                    seen_names.add(s_name.strip())
+                if name and name.lower() not in seen_names and dist <= 12.0:
+                    seen_names.add(name.lower())
                     real_schools.append({
-                        "name": s_name.strip(),
+                        "name": name,
                         "lat": s_lat,
                         "lng": s_lng,
                         "dist": round(dist, 2)
@@ -164,51 +151,50 @@ def fetch_real_nearby_pois(address, lat, lng):
     except Exception:
         pass
 
-    # 2. ARCGIS FALLBACK/SUPPLEMENTARY QUERY (If Overpass yielded under 3 results)
-    if len(real_schools) < 3:
-        try:
-            geo = ArcGIS(timeout=10)
-            queries = [f"School in {address}", f"School near {lat},{lng}"]
-            for q in queries:
-                candidates = geo.geocode(q, exactly_one=False, max_results=8) or []
-                for item in candidates:
-                    s_name = item.address.split(',')[0].strip()
-                    dist = calculate_distance_km(lat, lng, item.latitude, item.longitude)
-                    
-                    if s_name and s_name not in seen_names and dist <= 4.0:
-                        seen_names.add(s_name)
-                        real_schools.append({
-                            "name": s_name,
-                            "lat": item.latitude,
-                            "lng": item.longitude,
-                            "dist": round(dist, 2)
-                        })
-        except Exception:
-            pass
-
-    # 3. TRANSPORT HUBS QUERY VIA ARCGIS
+    # 2. Secondary Query: ArcGIS Geocode for Real Schools in Locality
     try:
         geo = ArcGIS(timeout=10)
-        bus_candidates = geo.geocode(f"Bus Station near {address}", exactly_one=False, max_results=3) or []
-        metro_candidates = geo.geocode(f"Metro Station near {address}", exactly_one=False, max_results=3) or []
-        combined_transport = (bus_candidates or []) + (metro_candidates or [])
+        search_terms = [f"School, {clean_loc}", f"High School, {clean_loc}"]
+        for term in search_terms:
+            candidates = geo.geocode(term, exactly_one=False, max_results=10) or []
+            for item in candidates:
+                s_name = item.address.split(',')[0].strip()
+                s_lat, s_lng = item.latitude, item.longitude
+                dist = calculate_distance_km(lat, lng, s_lat, s_lng)
 
-        seen_t_names = set()
-        for item in combined_transport:
-            t_name = item.address.split(',')[0].strip()
-            dist = calculate_distance_km(lat, lng, item.latitude, item.longitude)
-            if t_name and t_name not in seen_t_names and dist <= 4.5:
-                seen_t_names.add(t_name)
-                real_transport.append({
-                    "name": t_name,
-                    "lat": item.latitude,
-                    "lng": item.longitude,
-                    "dist": round(dist, 2)
-                })
+                if s_name.lower() not in seen_names and dist <= 12.0:
+                    seen_names.add(s_name.lower())
+                    real_schools.append({
+                        "name": s_name,
+                        "lat": s_lat,
+                        "lng": s_lng,
+                        "dist": round(dist, 2)
+                    })
     except Exception:
         pass
 
-    # Sort results by distance
+    # 3. Real Transport Stations Query
+    try:
+        geo = ArcGIS(timeout=10)
+        transport_terms = [f"Railway Station, {clean_loc}", f"Bus Station, {clean_loc}"]
+        for term in transport_terms:
+            t_candidates = geo.geocode(term, exactly_one=False, max_results=5) or []
+            seen_t = set()
+            for item in t_candidates:
+                t_name = item.address.split(',')[0].strip()
+                dist = calculate_distance_km(lat, lng, item.latitude, item.longitude)
+                if t_name.lower() not in seen_t and dist <= 15.0:
+                    seen_t.add(t_name.lower())
+                    real_transport.append({
+                        "name": t_name,
+                        "lat": item.latitude,
+                        "lng": item.longitude,
+                        "dist": round(dist, 2)
+                    })
+    except Exception:
+        pass
+
+    # Sort results strictly by distance from searched location
     real_schools = sorted(real_schools, key=lambda x: x['dist'])
     real_transport = sorted(real_transport, key=lambda x: x['dist'])
 
@@ -327,14 +313,14 @@ if location_input.strip():
             # Satellite Base Map
             m = folium.Map(
                 location=[lat, lng],
-                zoom_start=14,
+                zoom_start=13,
                 tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
                 attr="Esri World Imagery"
             )
 
             # Outer Boundary Polygon Mask
             world_bounds = [[90, -180], [90, 180], [-90, 180], [-90, -180]]
-            hole_cutout = get_circle_points(lat, lng, radius_meters=1000)
+            hole_cutout = get_circle_points(lat, lng, radius_meters=1800)
 
             # Mask: Shaded outside area
             folium.Polygon(
