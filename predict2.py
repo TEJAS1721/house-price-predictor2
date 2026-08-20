@@ -147,7 +147,7 @@ def get_location_data(address):
 if "user_role" not in st.session_state:
     st.session_state.user_role = None
 
-# 4. Streamlit UI: Compact Integrated Input & Search Bar
+# 4. Streamlit UI: Compact Search Container
 st.subheader("1. Property Location")
 
 search_container, _ = st.columns([2, 3])
@@ -170,7 +170,7 @@ if location_input.strip():
     spatial_data = get_location_data(location_input)
     
     if spatial_data:
-        # Green border & background for valid location
+        # Green border & background styling for valid location
         st.markdown(
             """
             <style>
@@ -211,16 +211,22 @@ if location_input.strip():
             # High-resolution Satellite Map using Esri World Imagery
             m = folium.Map(
                 location=[spatial_data['lat'], spatial_data['lng']],
-                zoom_start=17,
+                zoom_start=15,
                 tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
                 attr="Esri World Imagery"
             )
             
-            folium.Marker(
-                [spatial_data['lat'], spatial_data['lng']],
+            # Area boundary outline replaces the marker pin
+            folium.Circle(
+                location=[spatial_data['lat'], spatial_data['lng']],
+                radius=800,
+                color="#28a745",
+                weight=3,
+                fill=True,
+                fill_color="#28a745",
+                fill_opacity=0.2,
                 popup=spatial_data['address'],
-                tooltip="Selected Location",
-                icon=folium.Icon(color="red", icon="home", prefix="fa")
+                tooltip="Searched Area Boundary"
             ).add_to(m)
 
             st_folium(m, width="100%", height=300, returned_objects=[])
