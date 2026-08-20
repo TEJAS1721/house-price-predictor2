@@ -8,7 +8,7 @@ from geopy.geocoders import ArcGIS
 st.set_page_config(page_title="Real-Time House Price Predictor", page_icon="📍", layout="wide")
 st.title("📍 Real-Time House Price Predictor")
 
-# Custom CSS for integrated search bar styling
+# Custom CSS for integrated search bar layout
 st.markdown("""
     <style>
     /* Remove padding inside search form */
@@ -151,10 +151,9 @@ def get_location_data(address):
 if "user_role" not in st.session_state:
     st.session_state.user_role = None
 
-# 4. Streamlit UI: Shorter & Integrated Search Field
+# 4. Streamlit UI: Compact Search Container
 st.subheader("1. Property Location")
 
-# Limit the width of the search area to make it shorter horizontally
 search_container, _ = st.columns([2, 3])
 
 with search_container:
@@ -175,19 +174,52 @@ if location_input.strip():
     spatial_data = get_location_data(location_input)
     
     if spatial_data:
+        # Green border styling for input
+        st.markdown(
+            """
+            <style>
+            div[data-baseweb="input"] {
+                border: 2px solid #28a745 !important;
+                border-radius: 8px !important;
+                background-color: #f0fff4 !important;
+            }
+            div[data-baseweb="input"] input {
+                color: #155724 !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+
         base_rate_est, market_label, loc_tier = estimate_location_details(
             spatial_data['lat'], spatial_data['lng']
         )
         
-        st.markdown(
-            f"""
-            <div style="background-color: #d4edda; color: #155724; padding: 12px; border-radius: 8px; border: 1px solid #c3e6cb; margin-bottom: 15px;">
-                ✅ {spatial_data['address']}<br>
-                📍 <strong>Classification:</strong> Tier {loc_tier} ({market_label})
-            </div>
-            """, 
-            unsafe_allow_html=True
-        )
+        # Display Location Verification Box and Interactive Map Side-by-Side
+        loc_col, map_col = st.columns([1, 1])
+
+        with loc_col:
+            st.markdown(
+                f"""
+                <div style="background-color: #d4edda; color: #155724; padding: 16px; border-radius: 8px; border: 1px solid #c3e6cb; margin-bottom: 15px;">
+                    ✅ <strong>{spatial_data['address']}</strong><br><br>
+                    📍 <strong>Classification:</strong> Tier {loc_tier} ({market_label})<br>
+                    🚌 <strong>Nearby Transit Hubs:</strong> {spatial_data['public_transport_count']}<br>
+                    🏫 <strong>Nearby Schools:</strong> {spatial_data['school_count']}
+                </div>
+                """, 
+                unsafe_allow_html=True
+            )
+
+        with map_col:
+            # Map DataFrame for st.map
+            map_data = pd.DataFrame([{
+                'lat': spatial_data['lat'],
+                'lon': spatial_data['lng']
+            }])
+            
+            # Display native Streamlit Map
+            st.map(map_data, zoom=11, size=20)
 
         # 5. User Intent Selection (Own vs Rent)
         st.subheader("2. Select Your Intent")
@@ -253,7 +285,7 @@ if location_input.strip():
                     extra_bhk_cost = 4500
                     bathroom_cost = 1500
                     age_depreciation = 100
-                else:  # Tier 3 (e.g., Kolar)
+                else:  # Tier 3
                     base_1bhk_rent = 4000
                     extra_bhk_cost = 2500
                     bathroom_cost = 1000
@@ -272,4 +304,16 @@ if location_input.strip():
                 st.success(f"### Estimated Monthly Rent: **{formatted_rent}**")
 
     else:
+        st.markdown(
+            """
+            <style>
+            div[data-baseweb="input"] {
+                border: 2px solid #dc3545 !important;
+                border-radius: 8px !important;
+                background-color: #fff5f5 !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
         st.error("❌ **Invalid Input:** Please enter a valid City name, Town name, or a 6-digit Indian Pincode. Street names, stops, and specific buildings are not allowed.")
