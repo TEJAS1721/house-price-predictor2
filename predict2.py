@@ -152,14 +152,33 @@ def get_circle_points(lat, lng, radius_meters=750, num_points=64):
     return points
 
 
-# 2. Geocoder Setup
+# 2. Geocoder & Pincode Lookup API Setup
 @st.cache_resource
 def get_geolocator():
     return ArcGIS(timeout=10)
 
 geolocator = get_geolocator()
-
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+
+
+@st.cache_data(show_spinner=False, ttl=86400)
+def resolve_pincode_via_api(pincode):
+    """Fetches official Postal Area, District, and State for 6-digit Indian PIN codes."""
+    try:
+        url = f"https://api.postalpincode.in/pincode/{pincode}"
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data and data[0].get("Status") == "Success":
+                post_offices = data[0].get("PostOffice", [])
+                if post_offices:
+                    office = post_offices[0].get("Name", "")
+                    district = post_offices[0].get("District", "")
+                    state = post_offices[0].get("State", "")
+                    return f"{office}, {district}, {state}, India"
+    except Exception:
+        pass
+    return f"{pincode}, India"
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -214,22 +233,17 @@ def get_nearby_amenities(lat, lng, radius_meters=750):
         }
 
 
-# 3. Robust Geocoding & Location Parser
-@st.cache_data(show_spinner=False)
+# 3. Robust Geocoding Parser
 def get_location_data(address):
     if not address or len(address.strip()) < 2:
         return None
 
     raw_query = address.strip()
 
-    # Determine search queries based on PIN code or address string
-    search_queries = []
+    # Step A: Resolve Pincodes via Official Postal Database
     if raw_query.isdigit() and len(raw_query) == 6:
-        search_queries = [
-            f"PIN {raw_query}, India",
-            f"{raw_query}, India",
-            raw_query
-        ]
+        resolved_address = resolve_pincode_via_api(raw_query)
+        search_queries = [resolved_address, f"{raw_query}, India"]
     else:
         clean_addr = raw_query if "india" in raw_query.lower() else f"{raw_query}, India"
         search_queries = [clean_addr, raw_query]
@@ -271,6 +285,8 @@ def calculate_emi(principal, annual_rate_pct, tenure_years):
 # Session State Management
 if "user_role" not in st.session_state:
     st.session_state.user_role = None
+if "custom_coords" not in st.session_state:
+    st.session_state.custom_coords = None
 
 # 4. Streamlit UI: Search Container
 st.subheader("1. Property Location")
@@ -291,10 +307,24 @@ with search_container:
 
 spatial_data = None
 
+if search_submitted:
+    st.session_state.custom_coords = None  # Reset manual pin override on new search
+
 if location_input.strip():
     spatial_data = get_location_data(location_input)
 
     if spatial_data:
+        # Check if user clicked on map to adjust coordinates
+        if st.session_state.custom_coords:
+            lat = st.session_state.custom_coords["lat"]
+            lng = st.session_state.custom_coords["lng"]
+            amenities = get_nearby_amenities(lat, lng, radius_meters=750)
+            spatial_data["lat"] = lat
+            spatial_data["lng"] = lng
+            spatial_data["public_transport_count"] = amenities["public_transport_count"]
+            spatial_data["school_count"] = amenities["school_count"]
+            spatial_data["amenity_source"] = amenities["source"]
+
         st.markdown(
             """
             <style>
@@ -329,7 +359,8 @@ if location_input.strip():
                     ✅ <strong>{spatial_data['address']}</strong><br><br>
                     📍 <strong>Classification:</strong> Tier {loc_tier} ({market_label})<br>
                     🚌 <strong>Nearby Transport Locations (750m):</strong> {spatial_data['public_transport_count']}{amenity_note}<br>
-                    🏫 <strong>Nearby Schools/Colleges (750m):</strong> {spatial_data['school_count']}{amenity_note}
+                    🏫 <strong>Nearby Schools/Colleges (750m):</strong> {spatial_data['school_count']}{amenity_note}<br><br>
+                    💡 <em>Not exact? Click on the map to place a precise pin!</em>
                 </div>
                 """,
                 unsafe_allow_html=True
@@ -345,6 +376,14 @@ if location_input.strip():
                 tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
                 attr="Esri World Imagery"
             )
+
+            # Target location marker
+            folium.Marker(
+                [lat, lng],
+                popup="Selected Location",
+                tooltip="Selected Location (Click map to change)",
+                icon=folium.Icon(color="red", icon="home", prefix="fa")
+            ).add_to(m)
 
             world_bounds = [[90, -180], [90, 180], [-90, 180], [-90, -180]]
             hole_cutout = get_circle_points(lat, lng, radius_meters=750)
@@ -363,35 +402,19 @@ if location_input.strip():
                 locations=hole_cutout + [hole_cutout[0]],
                 color="#28a745",
                 weight=3,
-                opacity=0.9,
-                tooltip=spatial_data['address']
+                opacity=0.9
             ).add_to(m)
 
-            for i in range(spatial_data['public_transport_count']):
-                angle = (i * 137.5) * (math.pi / 180)
-                dist = 180 + ((i * 123) % 450)
-                d_lat = (dist * math.sin(angle)) / 111000.0
-                d_lng = (dist * math.cos(angle)) / (111000.0 * math.cos(math.radians(lat)))
+            map_output = st_folium(m, width="100%", height=320, key="interactive_map")
 
-                folium.Marker(
-                    [lat + d_lat, lng + d_lng],
-                    tooltip=f"Transport Hub #{i+1}",
-                    icon=folium.Icon(color="blue", icon="bus", prefix="fa")
-                ).add_to(m)
-
-            for i in range(spatial_data['school_count']):
-                angle = (i * 211.3 + 60) * (math.pi / 180)
-                dist = 220 + ((i * 97) % 420)
-                d_lat = (dist * math.sin(angle)) / 111000.0
-                d_lng = (dist * math.cos(angle)) / (111000.0 * math.cos(math.radians(lat)))
-
-                folium.Marker(
-                    [lat + d_lat, lng + d_lng],
-                    tooltip=f"School/College #{i+1}",
-                    icon=folium.Icon(color="orange", icon="graduation-cap", prefix="fa")
-                ).add_to(m)
-
-            st_folium(m, width="100%", height=320, returned_objects=[])
+            # Capture user map click to refine location
+            if map_output and map_output.get("last_clicked"):
+                clicked_lat = map_output["last_clicked"]["lat"]
+                clicked_lng = map_output["last_clicked"]["lng"]
+                if (st.session_state.custom_coords is None or 
+                    st.session_state.custom_coords["lat"] != clicked_lat):
+                    st.session_state.custom_coords = {"lat": clicked_lat, "lng": clicked_lng}
+                    st.rerun()
 
         # 5. User Intent Selection
         st.subheader("2. Select Your Intent")
