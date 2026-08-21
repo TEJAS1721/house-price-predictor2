@@ -27,7 +27,7 @@ st.markdown("""
 
 # 1. Realistic City Base Rates (Grounded Tier Baselines)
 CITY_HUBS = {
-    # Tier 1 Metros (Average per sqft base)
+    # Tier 1 Metros
     "Bengaluru": {"lat": 12.9716, "lng": 77.5946, "base_rate": 6500, "tier": 1},
     "Mumbai": {"lat": 19.0657, "lng": 72.8686, "base_rate": 15000, "tier": 1},
     "Delhi NCR": {"lat": 28.6315, "lng": 77.2167, "base_rate": 7500, "tier": 1},
@@ -94,7 +94,7 @@ def get_tier_and_hub(lat, lng):
     else:
         tier = 3
         market_label = f"Tier-3 District / Town ({round(min_dist, 1)} km from {nearest_hub_name})"
-        base_rate = 1400  # Grounded Tier-3 buying rate per sq.ft
+        base_rate = 1400
 
     return tier, nearest_hub_name, min_dist, market_label, base_rate
 
@@ -113,20 +113,18 @@ def predict_market_buy_price(sqft, bhk, bath, age, dist_to_hub, tier, prop_type,
 
 
 def predict_market_rent(bhk, bath, age, tier, furn_type, trans_count, sch_count):
-    # Tier-based baseline setup
     if tier == 1:
         base_rent = 6000
         bhk_rate = 2500
     elif tier == 2:
         base_rent = 3500
         bhk_rate = 1500
-    else:  # Tier 3 / Small Towns
+    else:  # Tier 3 Grounded Rates
         base_rent = 1800
         bhk_rate = 1000
 
     furn_add = FURNISHING_RENT_ADD.get(furn_type, 0)
     
-    # Strictly controlled rental calculation
     monthly_rent = (
         base_rent + 
         (bhk * bhk_rate) + 
@@ -216,21 +214,31 @@ def get_nearby_amenities(lat, lng, radius_meters=750):
         }
 
 
-# 3. Location Validation Function
+# 3. Location Validation Function (Pincode Fixed)
 @st.cache_data(show_spinner=False)
 def get_location_data(address):
     if not address or len(address.strip()) < 2:
         return None
 
     raw_query = address.strip()
-
-    if raw_query.isdigit() and len(raw_query) != 6:
-        return None
-
-    query = f"{raw_query}, India" if "india" not in raw_query.lower() else raw_query
+    is_pincode = raw_query.isdigit() and len(raw_query) == 6
 
     try:
-        location = geolocator.geocode(query, out_fields="*")
+        location = None
+
+        if is_pincode:
+            # Force ArcGIS to prioritize Postal Codes in India
+            location = geolocator.geocode(
+                query=f"{raw_query}, India",
+                out_fields="*",
+                search_extent=None,
+                custom_params={"category": "Postal"}
+            )
+            if not location:
+                location = geolocator.geocode(f"{raw_query}, India", out_fields="*")
+        else:
+            query = f"{raw_query}, India" if "india" not in raw_query.lower() else raw_query
+            location = geolocator.geocode(query, out_fields="*")
 
         if location and location.latitude and location.longitude:
             raw_data = getattr(location, 'raw', {})
@@ -241,7 +249,7 @@ def get_location_data(address):
 
             forbidden_types = ['StreetNameGroup', 'POI', 'Intersection', 'Transit', 'Bus Stop']
 
-            if score < 70 or addr_type in forbidden_types:
+            if score < 60 or addr_type in forbidden_types:
                 return None
 
             lat, lng = location.latitude, location.longitude
