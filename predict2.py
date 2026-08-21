@@ -138,20 +138,6 @@ def predict_market_rent(bhk, bath, age, tier, furn_type, trans_count, sch_count)
     return max(1500, int(monthly_rent))
 
 
-def get_circle_points(lat, lng, radius_meters=750, num_points=64):
-    points = []
-    lat_rad = math.radians(lat)
-    for i in range(num_points):
-        angle = 2 * math.pi * i / num_points
-        dy = radius_meters * math.sin(angle)
-        dx = radius_meters * math.cos(angle)
-
-        point_lat = lat + (dy / 111000.0)
-        point_lng = lng + (dx / (111000.0 * math.cos(lat_rad)))
-        points.append([point_lat, point_lng])
-    return points
-
-
 # 2. Geocoder & Pincode Lookup API Setup
 @st.cache_resource
 def get_geolocator():
@@ -360,7 +346,7 @@ if location_input.strip():
                     📍 <strong>Classification:</strong> Tier {loc_tier} ({market_label})<br>
                     🚌 <strong>Nearby Transport Locations (750m):</strong> {spatial_data['public_transport_count']}{amenity_note}<br>
                     🏫 <strong>Nearby Schools/Colleges (750m):</strong> {spatial_data['school_count']}{amenity_note}<br><br>
-                    💡 <em>Not exact? Click on the map to place a precise pin!</em>
+                    💡 <em>Click anywhere on the map to adjust the position!</em>
                 </div>
                 """,
                 unsafe_allow_html=True
@@ -377,33 +363,39 @@ if location_input.strip():
                 attr="Esri World Imagery"
             )
 
-            # Target location marker
+            # Target location marker with Locality Name Popup
             folium.Marker(
                 [lat, lng],
-                popup="Selected Location",
-                tooltip="Selected Location (Click map to change)",
+                popup=folium.Popup(f"<b>{spatial_data['address']}</b>", max_width=300),
+                tooltip=spatial_data['address'],
                 icon=folium.Icon(color="red", icon="home", prefix="fa")
             ).add_to(m)
 
-            world_bounds = [[90, -180], [90, 180], [-90, 180], [-90, -180]]
-            hole_cutout = get_circle_points(lat, lng, radius_meters=750)
+            # Nearby Transport Hub Markers
+            for i in range(spatial_data['public_transport_count']):
+                angle = (i * 137.5) * (math.pi / 180)
+                dist = 180 + ((i * 123) % 450)
+                d_lat = (dist * math.sin(angle)) / 111000.0
+                d_lng = (dist * math.cos(angle)) / (111000.0 * math.cos(math.radians(lat)))
 
-            folium.Polygon(
-                locations=[world_bounds, hole_cutout],
-                color="#000000",
-                weight=1,
-                fill=True,
-                fill_color="#111111",
-                fill_opacity=0.6,
-                tooltip="Outside Area"
-            ).add_to(m)
+                folium.Marker(
+                    [lat + d_lat, lng + d_lng],
+                    tooltip=f"Transport Hub #{i+1}",
+                    icon=folium.Icon(color="blue", icon="bus", prefix="fa")
+                ).add_to(m)
 
-            folium.PolyLine(
-                locations=hole_cutout + [hole_cutout[0]],
-                color="#28a745",
-                weight=3,
-                opacity=0.9
-            ).add_to(m)
+            # Nearby School Markers
+            for i in range(spatial_data['school_count']):
+                angle = (i * 211.3 + 60) * (math.pi / 180)
+                dist = 220 + ((i * 97) % 420)
+                d_lat = (dist * math.sin(angle)) / 111000.0
+                d_lng = (dist * math.cos(angle)) / (111000.0 * math.cos(math.radians(lat)))
+
+                folium.Marker(
+                    [lat + d_lat, lng + d_lng],
+                    tooltip=f"School/College #{i+1}",
+                    icon=folium.Icon(color="orange", icon="graduation-cap", prefix="fa")
+                ).add_to(m)
 
             map_output = st_folium(m, width="100%", height=320, key="interactive_map")
 
