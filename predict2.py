@@ -1,520 +1,185 @@
-import math
-import requests
-import numpy as np
-import pandas as pd
-import streamlit as st
-from geopy.geocoders import ArcGIS
 import folium
+from folium.plugins import Fullscreen, MarkerCluster
 from streamlit_folium import st_folium
 
-# Page Setup
-st.set_page_config(page_title="Real-Time House Price Predictor", page_icon="📍", layout="wide")
-st.title("📍 Real-Time House Price Predictor")
-
-# Custom CSS for UI styling
+# --- Custom Styling for Map Container ---
 st.markdown("""
-    <style>
-    div[data-testid="stForm"] {
-        border: none !important;
-        padding: 0 !important;
+<style>
+    .map-card {
+        background: #1e222d;
+        padding: 12px;
+        border-radius: 16px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+        margin-bottom: 20px;
     }
-    div[data-testid="column"] {
+    .map-header {
         display: flex;
-        align-items: flex-end;
+        justify-content: space-between;
+        align-items: center;
+        color: #ffffff;
+        padding: 4px 8px 12px 8px;
     }
-    </style>
+    .map-title {
+        font-size: 15px;
+        font-weight: 600;
+        letter-spacing: 0.5px;
+    }
+    .badge-tier {
+        background: linear-gradient(135deg, #007bff, #00d2ff);
+        color: white;
+        padding: 4px 10px;
+        border-radius: 20px;
+        font-size: 12px;
+        font-weight: 600;
+    }
+</style>
 """, unsafe_allow_html=True)
 
-# 1. Realistic City Base Rates
-CITY_HUBS = {
-    # Tier 1 Metros
-    "Bengaluru": {"lat": 12.9716, "lng": 77.5946, "base_rate": 6500, "tier": 1},
-    "Mumbai": {"lat": 19.0657, "lng": 72.8686, "base_rate": 15000, "tier": 1},
-    "Delhi NCR": {"lat": 28.6315, "lng": 77.2167, "base_rate": 7500, "tier": 1},
-    "Hyderabad": {"lat": 17.4435, "lng": 78.3772, "base_rate": 5500, "tier": 1},
-    "Chennai": {"lat": 13.0604, "lng": 80.2496, "base_rate": 5800, "tier": 1},
-    "Pune": {"lat": 18.5204, "lng": 73.8567, "base_rate": 5200, "tier": 1},
-    "Kolkata": {"lat": 22.5726, "lng": 88.3639, "base_rate": 4500, "tier": 1},
+# --- Map Rendering Function ---
+def render_enhanced_location_preview(spatial_data, loc_tier, market_label):
+    lat = spatial_data['lat']
+    lng = spatial_data['lng']
+    address = spatial_data['address']
 
-    # Tier 2 Cities
-    "Mysuru": {"lat": 12.2958, "lng": 76.6394, "base_rate": 3200, "tier": 2},
-    "Mangaluru": {"lat": 12.9141, "lng": 74.8560, "base_rate": 3000, "tier": 2},
-    "Hubballi": {"lat": 15.3647, "lng": 75.1240, "base_rate": 2500, "tier": 2},
-    "Coimbatore": {"lat": 11.0168, "lng": 76.9558, "base_rate": 3200, "tier": 2},
-    "Kochi": {"lat": 9.9312, "lng": 76.2673, "base_rate": 3800, "tier": 2},
-    "Visakhapatnam": {"lat": 17.6868, "lng": 83.2185, "base_rate": 3400, "tier": 2},
-    "Jaipur": {"lat": 26.9124, "lng": 75.7873, "base_rate": 3200, "tier": 2},
-}
-
-PROPERTY_TYPE_MULTIPLIER = {
-    "Apartment": 1.00,
-    "Independent House": 1.05,
-    "Villa": 1.25,
-    "Plot (Land only)": 0.60,
-}
-
-FURNISHING_MULTIPLIER = {
-    "Unfurnished": 1.00,
-    "Semi-Furnished": 1.03,
-    "Fully Furnished": 1.06,
-}
-
-FURNISHING_RENT_ADD = {
-    "Unfurnished": 0,
-    "Semi-Furnished": 800,
-    "Fully Furnished": 2000,
-}
-
-
-def calculate_distance_km(lat1, lon1, lat2, lon2):
-    R = 6371.0
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = (math.sin(dlat / 2) ** 2 +
-         math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2)
-    return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
-
-
-def get_tier_and_hub(lat, lng):
-    min_dist = float('inf')
-    nearest_hub_name = None
-    nearest_hub = None
-
-    for hub, coords in CITY_HUBS.items():
-        dist = calculate_distance_km(lat, lng, coords['lat'], coords['lng'])
-        if dist < min_dist:
-            min_dist = dist
-            nearest_hub_name = hub
-            nearest_hub = coords
-
-    if min_dist <= 25:
-        tier = nearest_hub['tier']
-        market_label = f"Tier-{tier} Area near {nearest_hub_name} ({round(min_dist, 1)} km)"
-        base_rate = nearest_hub['base_rate']
-    else:
-        tier = 3
-        market_label = f"Tier-3 District / Town ({round(min_dist, 1)} km from {nearest_hub_name})"
-        base_rate = 1400
-
-    return tier, nearest_hub_name, min_dist, market_label, base_rate
-
-
-def predict_market_buy_price(sqft, bhk, bath, age, dist_to_hub, tier, prop_type, furn_type, trans_count, sch_count, base_rate):
-    dist_decay = max(0.40, math.exp(-0.025 * dist_to_hub))
-    connectivity_boost = min(1.08, 1.0 + (0.003 * trans_count) + (0.005 * sch_count))
-    effective_sqft_price = base_rate * dist_decay * connectivity_boost
-    
-    type_mult = PROPERTY_TYPE_MULTIPLIER.get(prop_type, 1.0)
-    furn_mult = FURNISHING_MULTIPLIER.get(furn_type, 1.0)
-    age_depr = max(0.65, 1.0 - (age * 0.012))
-
-    total_price = (sqft * effective_sqft_price * type_mult * furn_mult * age_depr)
-    return max(200000, total_price)
-
-
-def predict_market_rent(bhk, bath, age, tier, furn_type, trans_count, sch_count):
-    if tier == 1:
-        base_rent = 6000
-        bhk_rate = 2500
-    elif tier == 2:
-        base_rent = 3500
-        bhk_rate = 1500
-    else:
-        base_rent = 1800
-        bhk_rate = 1000
-
-    furn_add = FURNISHING_RENT_ADD.get(furn_type, 0)
-    
-    monthly_rent = (
-        base_rent + 
-        (bhk * bhk_rate) + 
-        (bath * 400) + 
-        furn_add - 
-        (age * 50) + 
-        min(600, trans_count * 50) + 
-        min(500, sch_count * 50)
+    # 1. Initialize Map with Realistic Base Tiles
+    m = folium.Map(
+        location=[lat, lng],
+        zoom_start=16,
+        max_zoom=19,
+        tiles=None # We will add custom tile layers
     )
-    
-    return max(1500, int(monthly_rent))
 
+    # High-Res Satellite View (Esri Clarity / World Imagery)
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri World Imagery",
+        name="Satellite Aerial",
+        max_zoom=19
+    ).add_to(m)
 
-# 2. Geocoder & Pincode Lookup API Setup
-@st.cache_resource
-def get_geolocator():
-    return ArcGIS(timeout=10)
+    # Clean Vector Street Map (CartoDB Positron)
+    folium.TileLayer(
+        tiles="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
+        attr="CartoDB Voyager",
+        name="Street View",
+        max_zoom=19
+    ).add_to(m)
 
-geolocator = get_geolocator()
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
-
-
-@st.cache_data(show_spinner=False, ttl=86400)
-def resolve_pincode_via_api(pincode):
-    """Fetches official Postal Area, District, and State for 6-digit Indian PIN codes."""
-    try:
-        url = f"https://api.postalpincode.in/pincode/{pincode}"
-        resp = requests.get(url, timeout=5)
-        if resp.status_code == 200:
-            data = resp.json()
-            if data and data[0].get("Status") == "Success":
-                post_offices = data[0].get("PostOffice", [])
-                if post_offices:
-                    office = post_offices[0].get("Name", "")
-                    district = post_offices[0].get("District", "")
-                    state = post_offices[0].get("State", "")
-                    return f"{office}, {district}, {state}, India"
-    except Exception:
-        pass
-    return f"{pincode}, India"
-
-
-@st.cache_data(show_spinner=False, ttl=3600)
-def get_nearby_amenities(lat, lng, radius_meters=750):
-    query = f"""
-    [out:json][timeout:15];
-    (
-      node["highway"="bus_stop"](around:{radius_meters},{lat},{lng});
-      node["railway"~"station|halt|tram_stop"](around:{radius_meters},{lat},{lng});
-      node["public_transport"](around:{radius_meters},{lat},{lng});
-    );
-    out count;
-    >;
-    (
-      node["amenity"="school"](around:{radius_meters},{lat},{lng});
-      node["amenity"="college"](around:{radius_meters},{lat},{lng});
-      way["amenity"="school"](around:{radius_meters},{lat},{lng});
-    );
-    out count;
+    # 2. Add Animated Pulsing Pin for Target Location
+    custom_pin_html = f"""
+    <div style="
+        position: relative;
+        width: 30px;
+        height: 30px;
+        background: #ff3b30;
+        border: 3px solid #ffffff;
+        border-radius: 50%;
+        box-shadow: 0 0 15px rgba(255, 59, 48, 0.8);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    ">
+        <div style="
+            width: 10px;
+            height: 10px;
+            background: white;
+            border-radius: 50%;
+        "></div>
+    </div>
     """
-    try:
-        resp = requests.post(OVERPASS_URL, data={"data": query}, timeout=12)
-        resp.raise_for_status()
-        data = resp.json()
-
-        transport_count = 0
-        school_count = 0
-        seen_transport = False
-
-        for el in data.get("elements", []):
-            if el.get("type") == "count":
-                tags = el.get("tags", {})
-                total = int(tags.get("total", 0))
-                if not seen_transport:
-                    transport_count = total
-                    seen_transport = True
-                else:
-                    school_count = total
-
-        return {
-            "public_transport_count": transport_count,
-            "school_count": school_count,
-            "source": "live",
-        }
-    except Exception:
-        public_transport_count = int(abs(hash(f"{lat:.2f},{lng:.2f}")) % 5) + 2
-        school_count = int(abs(hash(f"{lat:.3f},{lng:.3f}")) % 5) + 2
-        return {
-            "public_transport_count": public_transport_count,
-            "school_count": school_count,
-            "source": "estimated",
-        }
-
-
-# 3. Robust Geocoding Parser
-def get_location_data(address):
-    if not address or len(address.strip()) < 2:
-        return None
-
-    raw_query = address.strip()
-
-    # Step A: Resolve Pincodes via Official Postal Database
-    if raw_query.isdigit() and len(raw_query) == 6:
-        resolved_address = resolve_pincode_via_api(raw_query)
-        search_queries = [resolved_address, f"{raw_query}, India"]
-    else:
-        clean_addr = raw_query if "india" in raw_query.lower() else f"{raw_query}, India"
-        search_queries = [clean_addr, raw_query]
-
-    location = None
-    for q in search_queries:
-        try:
-            location = geolocator.geocode(q, out_fields="*")
-            if location and location.latitude and location.longitude:
-                break
-        except Exception:
-            continue
-
-    if location and location.latitude and location.longitude:
-        lat, lng = location.latitude, location.longitude
-        amenities = get_nearby_amenities(lat, lng, radius_meters=750)
-
-        return {
-            "lat": lat,
-            "lng": lng,
-            "address": location.address,
-            "public_transport_count": amenities["public_transport_count"],
-            "school_count": amenities["school_count"],
-            "amenity_source": amenities["source"],
-        }
-
-    return None
-
-
-def calculate_emi(principal, annual_rate_pct, tenure_years):
-    monthly_rate = (annual_rate_pct / 100) / 12
-    n_months = tenure_years * 12
-    if monthly_rate == 0:
-        return principal / n_months
-    emi = principal * monthly_rate * (1 + monthly_rate) ** n_months / ((1 + monthly_rate) ** n_months - 1)
-    return emi
-
-
-# Session State Management
-if "user_role" not in st.session_state:
-    st.session_state.user_role = None
-if "custom_coords" not in st.session_state:
-    st.session_state.custom_coords = None
-
-# 4. Streamlit UI: Search Container
-st.subheader("1. Property Location")
-
-search_container, _ = st.columns([2, 3])
-
-with search_container:
-    with st.form(key="search_form", border=False):
-        c_input, c_btn = st.columns([3, 1], gap="small")
-        with c_input:
-            location_input = st.text_input(
-                "Property Location",
-                placeholder="City, Locality, or Pincode...",
-                label_visibility="collapsed"
-            )
-        with c_btn:
-            search_submitted = st.form_submit_button("🔍 Search", use_container_width=True)
-
-spatial_data = None
-
-if search_submitted:
-    st.session_state.custom_coords = None  # Reset manual pin override on new search
-
-if location_input.strip():
-    spatial_data = get_location_data(location_input)
-
-    if spatial_data:
-        # Check if user clicked on map to adjust coordinates
-        if st.session_state.custom_coords:
-            lat = st.session_state.custom_coords["lat"]
-            lng = st.session_state.custom_coords["lng"]
-            amenities = get_nearby_amenities(lat, lng, radius_meters=750)
-            spatial_data["lat"] = lat
-            spatial_data["lng"] = lng
-            spatial_data["public_transport_count"] = amenities["public_transport_count"]
-            spatial_data["school_count"] = amenities["school_count"]
-            spatial_data["amenity_source"] = amenities["source"]
-
-        st.markdown(
-            """
-            <style>
-            div[data-baseweb="input"] {
-                border: 2px solid #28a745 !important;
-                border-radius: 8px !important;
-                background-color: #f0fff4 !important;
-            }
-            div[data-baseweb="input"] input {
-                color: #155724 !important;
-            }
-            </style>
+    
+    folium.Marker(
+        [lat, lng],
+        popup=folium.Popup(
+            f"""
+            <div style="font-family: sans-serif; padding: 5px; width: 200px;">
+                <h4 style="margin: 0 0 5px 0; color: #1e222d;">Selected Locality</h4>
+                <p style="margin: 0; font-size: 12px; color: #555;">{address}</p>
+            </div>
             """,
-            unsafe_allow_html=True
+            max_width=250
+        ),
+        tooltip=f"📍 {address}",
+        icon=folium.DivIcon(
+            html=custom_pin_html,
+            icon_size=(30, 30),
+            icon_anchor=(15, 15)
         )
+    ).add_to(m)
 
-        loc_tier, hub_name, dist_to_hub, market_label, base_rate = get_tier_and_hub(
-            spatial_data['lat'], spatial_data['lng']
-        )
+    # 3. Add Amenity Layer Groups with Custom Styling
+    transport_group = folium.FeatureGroup(name="Transit Hubs")
+    school_group = folium.FeatureGroup(name="Schools & Colleges")
 
-        loc_col, map_col = st.columns([1, 1])
+    # Add Transit Markers
+    for i in range(spatial_data['public_transport_count']):
+        angle = (i * 137.5) * (math.pi / 180)
+        dist = 180 + ((i * 123) % 450)
+        d_lat = (dist * math.sin(angle)) / 111000.0
+        d_lng = (dist * math.cos(angle)) / (111000.0 * math.cos(math.radians(lat)))
 
-        amenity_note = (
-            "" if spatial_data["amenity_source"] == "live"
-            else " <span style='font-size:0.75em;opacity:0.7;'>(estimated — live data unavailable)</span>"
-        )
+        folium.CircleMarker(
+            location=[lat + d_lat, lng + d_lng],
+            radius=7,
+            color="#007bff",
+            fill=True,
+            fill_color="#007bff",
+            fill_opacity=0.8,
+            popup=f"Transit Hub #{i+1}",
+            tooltip="🚌 Public Transit Point"
+        ).add_to(transport_group)
 
-        with loc_col:
-            st.markdown(
-                f"""
-                <div style="background-color: #d4edda; color: #155724; padding: 16px; border-radius: 8px; border: 1px solid #c3e6cb; margin-bottom: 15px;">
-                    ✅ <strong>{spatial_data['address']}</strong><br><br>
-                    📍 <strong>Classification:</strong> Tier {loc_tier} ({market_label})<br>
-                    🚌 <strong>Nearby Transport Locations (750m):</strong> {spatial_data['public_transport_count']}{amenity_note}<br>
-                    🏫 <strong>Nearby Schools/Colleges (750m):</strong> {spatial_data['school_count']}{amenity_note}<br><br>
-                    💡 <em>Click anywhere on the map to adjust the position!</em>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
+    # Add School Markers
+    for i in range(spatial_data['school_count']):
+        angle = (i * 211.3 + 60) * (math.pi / 180)
+        dist = 220 + ((i * 97) % 420)
+        d_lat = (dist * math.sin(angle)) / 111000.0
+        d_lng = (dist * math.cos(angle)) / (111000.0 * math.cos(math.radians(lat)))
 
-        with map_col:
-            lat = spatial_data['lat']
-            lng = spatial_data['lng']
+        folium.CircleMarker(
+            location=[lat + d_lat, lng + d_lng],
+            radius=7,
+            color="#ff9500",
+            fill=True,
+            fill_color="#ff9500",
+            fill_opacity=0.8,
+            popup=f"School/College #{i+1}",
+            tooltip="🏫 Educational Institution"
+        ).add_to(school_group)
 
-            m = folium.Map(
-                location=[lat, lng],
-                zoom_start=15,
-                tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-                attr="Esri World Imagery"
-            )
+    transport_group.add_to(m)
+    school_group.add_to(m)
 
-            # Target location marker with Locality Name Popup
-            folium.Marker(
-                [lat, lng],
-                popup=folium.Popup(f"<b>{spatial_data['address']}</b>", max_width=300),
-                tooltip=spatial_data['address'],
-                icon=folium.Icon(color="red", icon="home", prefix="fa")
-            ).add_to(m)
+    # 4. Interactive Tools
+    folium.LayerControl(position="topright", collapsed=True).add_to(m)
+    Fullscreen(position="topleft").add_to(m)
 
-            # Nearby Transport Hub Markers
-            for i in range(spatial_data['public_transport_count']):
-                angle = (i * 137.5) * (math.pi / 180)
-                dist = 180 + ((i * 123) % 450)
-                d_lat = (dist * math.sin(angle)) / 111000.0
-                d_lng = (dist * math.cos(angle)) / (111000.0 * math.cos(math.radians(lat)))
+    return m
 
-                folium.Marker(
-                    [lat + d_lat, lng + d_lng],
-                    tooltip=f"Transport Hub #{i+1}",
-                    icon=folium.Icon(color="blue", icon="bus", prefix="fa")
-                ).add_to(m)
+# --- Render in Streamlit UI ---
+with map_col:
+    st.markdown(f"""
+    <div class="map-header">
+        <span class="map-title">🌐 Interactive Location Preview</span>
+        <span class="badge-tier">Tier {loc_tier} Locality</span>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    m = render_enhanced_location_preview(spatial_data, loc_tier, market_label)
+    
+    map_output = st_folium(
+        m,
+        width="100%",
+        height=380,
+        key="enhanced_interactive_map",
+        returned_objects=["last_clicked"]
+    )
 
-            # Nearby School Markers
-            for i in range(spatial_data['school_count']):
-                angle = (i * 211.3 + 60) * (math.pi / 180)
-                dist = 220 + ((i * 97) % 420)
-                d_lat = (dist * math.sin(angle)) / 111000.0
-                d_lng = (dist * math.cos(angle)) / (111000.0 * math.cos(math.radians(lat)))
-
-                folium.Marker(
-                    [lat + d_lat, lng + d_lng],
-                    tooltip=f"School/College #{i+1}",
-                    icon=folium.Icon(color="orange", icon="graduation-cap", prefix="fa")
-                ).add_to(m)
-
-            map_output = st_folium(m, width="100%", height=320, key="interactive_map")
-
-            # Capture user map click to refine location
-            if map_output and map_output.get("last_clicked"):
-                clicked_lat = map_output["last_clicked"]["lat"]
-                clicked_lng = map_output["last_clicked"]["lng"]
-                if (st.session_state.custom_coords is None or 
-                    st.session_state.custom_coords["lat"] != clicked_lat):
-                    st.session_state.custom_coords = {"lat": clicked_lat, "lng": clicked_lng}
-                    st.rerun()
-
-        # 5. User Intent Selection
-        st.subheader("2. Select Your Intent")
-        btn_col1, btn_col2, _ = st.columns([1, 1, 3])
-
-        with btn_col1:
-            if st.button("🏠 Own", use_container_width=True):
-                st.session_state.user_role = "Own"
-
-        with btn_col2:
-            if st.button("🔑 Rent", use_container_width=True):
-                st.session_state.user_role = "Rent"
-
-        # 6. Inputs & Predictions
-        if st.session_state.user_role == "Own":
-            st.markdown("---")
-            st.subheader("3. Enter Property Details (Own)")
-            col1, col2 = st.columns(2)
-
-            with col1:
-                sqft = st.slider("Square Feet", min_value=500, max_value=5000, value=1200, step=50)
-                bedrooms = st.slider("Bedrooms (BHK)", min_value=1, max_value=6, value=2)
-                property_type = st.selectbox("Property Type", list(PROPERTY_TYPE_MULTIPLIER.keys()))
-            with col2:
-                bathrooms = st.slider("Bathrooms", min_value=1, max_value=5, value=2)
-                age = st.slider("Property Age (Years)", min_value=0, max_value=30, value=5)
-                furnishing = st.selectbox("Furnishing", list(FURNISHING_MULTIPLIER.keys()))
-
-            if st.button("Predict Buying Price", type="primary"):
-                total_price = predict_market_buy_price(
-                    sqft, bedrooms, bathrooms, age, dist_to_hub, loc_tier,
-                    property_type, furnishing, spatial_data['public_transport_count'],
-                    spatial_data['school_count'], base_rate
-                )
-
-                low_price = total_price * 0.90
-                high_price = total_price * 1.10
-
-                def fmt_inr(v):
-                    return f"₹{v/10000000:.2f} Cr" if v >= 10000000 else f"₹{v/100000:.2f} Lakhs"
-
-                st.success(
-                    f"### Estimated Purchase Price: **{fmt_inr(low_price)} – {fmt_inr(high_price)}**\n"
-                    f"(midpoint: {fmt_inr(total_price)})"
-                )
-
-                st.session_state["last_buy_price"] = total_price
-
-            if "last_buy_price" in st.session_state:
-                st.markdown("---")
-                st.subheader("4. Loan EMI Calculator")
-
-                emi_col1, emi_col2, emi_col3 = st.columns(3)
-                with emi_col1:
-                    down_payment_pct = st.slider("Down Payment (%)", 10, 50, 20)
-                with emi_col2:
-                    interest_rate = st.slider("Home Loan Interest Rate (% p.a.)", 6.0, 12.0, 8.5, step=0.1)
-                with emi_col3:
-                    tenure_years = st.slider("Loan Tenure (Years)", 5, 30, 20)
-
-                purchase_price = st.session_state["last_buy_price"]
-                down_payment_amt = purchase_price * (down_payment_pct / 100)
-                loan_amount = purchase_price - down_payment_amt
-                emi = calculate_emi(loan_amount, interest_rate, tenure_years)
-
-                st.info(
-                    f"💰 **Down Payment:** ₹{down_payment_amt:,.0f}  \n"
-                    f"🏦 **Loan Amount:** ₹{loan_amount:,.0f}  \n"
-                    f"📆 **Monthly EMI:** ₹{emi:,.0f} over {tenure_years} years"
-                )
-
-        elif st.session_state.user_role == "Rent":
-            st.markdown("---")
-            st.subheader("3. Enter Property Details (Rent)")
-            col1, col2 = st.columns(2)
-
-            with col1:
-                bedrooms = st.slider("Bedrooms (BHK)", min_value=1, max_value=6, value=1)
-                bathrooms = st.slider("Bathrooms", min_value=1, max_value=5, value=1)
-                furnishing = st.selectbox("Furnishing", list(FURNISHING_RENT_ADD.keys()))
-            with col2:
-                age = st.slider("Property Age (Years)", min_value=0, max_value=30, value=5)
-
-            if st.button("Predict Monthly Rent", type="primary"):
-                monthly_rent = predict_market_rent(
-                    bedrooms, bathrooms, age, loc_tier, furnishing,
-                    spatial_data['public_transport_count'], spatial_data['school_count']
-                )
-
-                low_rent = int(monthly_rent * 0.90)
-                high_rent = int(monthly_rent * 1.10)
-
-                st.success(
-                    f"### Estimated Monthly Rent: **₹{low_rent:,} – ₹{high_rent:,} / month**\n"
-                    f"(midpoint: ₹{monthly_rent:,})"
-                )
-
-    else:
-        st.markdown(
-            """
-            <style>
-            div[data-baseweb="input"] {
-                border: 2px solid #dc3545 !important;
-                border-radius: 8px !important;
-                background-color: #fff5f5 !important;
-            }
-            </style>
-            """,
-            unsafe_allow_html=True
-        )
-        st.error("❌ **Invalid Input:** Please enter a valid City, Locality, or Pincode.")
+    # Capture map clicks for dynamic pin adjustments
+    if map_output and map_output.get("last_clicked"):
+        clicked_lat = map_output["last_clicked"]["lat"]
+        clicked_lng = map_output["last_clicked"]["lng"]
+        if (st.session_state.custom_coords is None or 
+            st.session_state.custom_coords["lat"] != clicked_lat):
+            st.session_state.custom_coords = {"lat": clicked_lat, "lng": clicked_lng}
+            st.rerun()
