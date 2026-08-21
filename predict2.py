@@ -25,7 +25,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 1. Realistic City Base Rates (Grounded Tier Baselines)
+# 1. Realistic City Base Rates
 CITY_HUBS = {
     # Tier 1 Metros
     "Bengaluru": {"lat": 12.9716, "lng": 77.5946, "base_rate": 6500, "tier": 1},
@@ -119,7 +119,7 @@ def predict_market_rent(bhk, bath, age, tier, furn_type, trans_count, sch_count)
     elif tier == 2:
         base_rent = 3500
         bhk_rate = 1500
-    else:  # Tier 3 Grounded Rates
+    else:
         base_rent = 1800
         bhk_rate = 1000
 
@@ -214,57 +214,47 @@ def get_nearby_amenities(lat, lng, radius_meters=750):
         }
 
 
-# 3. Location Validation Function (Pincode Fixed)
+# 3. Robust Geocoding & Location Parser
 @st.cache_data(show_spinner=False)
 def get_location_data(address):
     if not address or len(address.strip()) < 2:
         return None
 
     raw_query = address.strip()
-    is_pincode = raw_query.isdigit() and len(raw_query) == 6
 
-    try:
-        location = None
+    # Determine search queries based on PIN code or address string
+    search_queries = []
+    if raw_query.isdigit() and len(raw_query) == 6:
+        search_queries = [
+            f"PIN {raw_query}, India",
+            f"{raw_query}, India",
+            raw_query
+        ]
+    else:
+        clean_addr = raw_query if "india" in raw_query.lower() else f"{raw_query}, India"
+        search_queries = [clean_addr, raw_query]
 
-        if is_pincode:
-            # Force ArcGIS to prioritize Postal Codes in India
-            location = geolocator.geocode(
-                query=f"{raw_query}, India",
-                out_fields="*",
-                search_extent=None,
-                custom_params={"category": "Postal"}
-            )
-            if not location:
-                location = geolocator.geocode(f"{raw_query}, India", out_fields="*")
-        else:
-            query = f"{raw_query}, India" if "india" not in raw_query.lower() else raw_query
-            location = geolocator.geocode(query, out_fields="*")
+    location = None
+    for q in search_queries:
+        try:
+            location = geolocator.geocode(q, out_fields="*")
+            if location and location.latitude and location.longitude:
+                break
+        except Exception:
+            continue
 
-        if location and location.latitude and location.longitude:
-            raw_data = getattr(location, 'raw', {})
-            attributes = raw_data.get('attributes', {}) or raw_data.get('feature', {}).get('attributes', {})
+    if location and location.latitude and location.longitude:
+        lat, lng = location.latitude, location.longitude
+        amenities = get_nearby_amenities(lat, lng, radius_meters=750)
 
-            score = attributes.get('Score', 100)
-            addr_type = attributes.get('Addr_type', '') or attributes.get('Type', '')
-
-            forbidden_types = ['StreetNameGroup', 'POI', 'Intersection', 'Transit', 'Bus Stop']
-
-            if score < 60 or addr_type in forbidden_types:
-                return None
-
-            lat, lng = location.latitude, location.longitude
-            amenities = get_nearby_amenities(lat, lng, radius_meters=750)
-
-            return {
-                "lat": lat,
-                "lng": lng,
-                "address": location.address,
-                "public_transport_count": amenities["public_transport_count"],
-                "school_count": amenities["school_count"],
-                "amenity_source": amenities["source"],
-            }
-    except Exception:
-        pass
+        return {
+            "lat": lat,
+            "lng": lng,
+            "address": location.address,
+            "public_transport_count": amenities["public_transport_count"],
+            "school_count": amenities["school_count"],
+            "amenity_source": amenities["source"],
+        }
 
     return None
 
