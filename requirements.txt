@@ -1,7 +1,7 @@
-streamlit
-pandas
-numpy
-geopy
-requests
-folium
-streamlit-folium
+streamlit>=1.32
+geopy>=2.4
+folium>=0.16
+streamlit-folium>=0.20
+requests>=2.31
+numpy>=1.26
+pandas>=2.2
