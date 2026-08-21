@@ -25,44 +25,44 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 1. Realistic City Base Rates (Calibrated for Mid-Segment Housing)
+# 1. Realistic City Base Rates (Grounded Tier Baselines)
 CITY_HUBS = {
     # Tier 1 Metros (Average per sqft base)
-    "Bengaluru": {"lat": 12.9716, "lng": 77.5946, "base_rate": 7500, "tier": 1},
-    "Mumbai": {"lat": 19.0657, "lng": 72.8686, "base_rate": 18000, "tier": 1},
-    "Delhi NCR": {"lat": 28.6315, "lng": 77.2167, "base_rate": 9000, "tier": 1},
-    "Hyderabad": {"lat": 17.4435, "lng": 78.3772, "base_rate": 6500, "tier": 1},
-    "Chennai": {"lat": 13.0604, "lng": 80.2496, "base_rate": 6800, "tier": 1},
-    "Pune": {"lat": 18.5204, "lng": 73.8567, "base_rate": 6200, "tier": 1},
-    "Kolkata": {"lat": 22.5726, "lng": 88.3639, "base_rate": 5200, "tier": 1},
+    "Bengaluru": {"lat": 12.9716, "lng": 77.5946, "base_rate": 6500, "tier": 1},
+    "Mumbai": {"lat": 19.0657, "lng": 72.8686, "base_rate": 15000, "tier": 1},
+    "Delhi NCR": {"lat": 28.6315, "lng": 77.2167, "base_rate": 7500, "tier": 1},
+    "Hyderabad": {"lat": 17.4435, "lng": 78.3772, "base_rate": 5500, "tier": 1},
+    "Chennai": {"lat": 13.0604, "lng": 80.2496, "base_rate": 5800, "tier": 1},
+    "Pune": {"lat": 18.5204, "lng": 73.8567, "base_rate": 5200, "tier": 1},
+    "Kolkata": {"lat": 22.5726, "lng": 88.3639, "base_rate": 4500, "tier": 1},
 
     # Tier 2 Cities
-    "Mysuru": {"lat": 12.2958, "lng": 76.6394, "base_rate": 3800, "tier": 2},
-    "Mangaluru": {"lat": 12.9141, "lng": 74.8560, "base_rate": 3600, "tier": 2},
-    "Hubballi": {"lat": 15.3647, "lng": 75.1240, "base_rate": 3000, "tier": 2},
-    "Coimbatore": {"lat": 11.0168, "lng": 76.9558, "base_rate": 4000, "tier": 2},
-    "Kochi": {"lat": 9.9312, "lng": 76.2673, "base_rate": 4500, "tier": 2},
-    "Visakhapatnam": {"lat": 17.6868, "lng": 83.2185, "base_rate": 4200, "tier": 2},
-    "Jaipur": {"lat": 26.9124, "lng": 75.7873, "base_rate": 4000, "tier": 2},
+    "Mysuru": {"lat": 12.2958, "lng": 76.6394, "base_rate": 3200, "tier": 2},
+    "Mangaluru": {"lat": 12.9141, "lng": 74.8560, "base_rate": 3000, "tier": 2},
+    "Hubballi": {"lat": 15.3647, "lng": 75.1240, "base_rate": 2500, "tier": 2},
+    "Coimbatore": {"lat": 11.0168, "lng": 76.9558, "base_rate": 3200, "tier": 2},
+    "Kochi": {"lat": 9.9312, "lng": 76.2673, "base_rate": 3800, "tier": 2},
+    "Visakhapatnam": {"lat": 17.6868, "lng": 83.2185, "base_rate": 3400, "tier": 2},
+    "Jaipur": {"lat": 26.9124, "lng": 75.7873, "base_rate": 3200, "tier": 2},
 }
 
 PROPERTY_TYPE_MULTIPLIER = {
     "Apartment": 1.00,
-    "Independent House": 1.10,
-    "Villa": 1.30,
-    "Plot (Land only)": 0.65,
+    "Independent House": 1.05,
+    "Villa": 1.25,
+    "Plot (Land only)": 0.60,
 }
 
 FURNISHING_MULTIPLIER = {
     "Unfurnished": 1.00,
-    "Semi-Furnished": 1.04,
-    "Fully Furnished": 1.08,
+    "Semi-Furnished": 1.03,
+    "Fully Furnished": 1.06,
 }
 
 FURNISHING_RENT_ADD = {
     "Unfurnished": 0,
-    "Semi-Furnished": 1500,
-    "Fully Furnished": 3500,
+    "Semi-Furnished": 800,
+    "Fully Furnished": 2000,
 }
 
 
@@ -87,36 +87,57 @@ def get_tier_and_hub(lat, lng):
             nearest_hub_name = hub
             nearest_hub = coords
 
-    if min_dist <= 35:
+    if min_dist <= 25:
         tier = nearest_hub['tier']
         market_label = f"Tier-{tier} Area near {nearest_hub_name} ({round(min_dist, 1)} km)"
         base_rate = nearest_hub['base_rate']
     else:
         tier = 3
         market_label = f"Tier-3 District / Town ({round(min_dist, 1)} km from {nearest_hub_name})"
-        base_rate = 2200
+        base_rate = 1400  # Grounded Tier-3 buying rate per sq.ft
 
     return tier, nearest_hub_name, min_dist, market_label, base_rate
 
 
 def predict_market_buy_price(sqft, bhk, bath, age, dist_to_hub, tier, prop_type, furn_type, trans_count, sch_count, base_rate):
-    dist_decay = max(0.45, math.exp(-0.02 * dist_to_hub))
-    connectivity_boost = min(1.15, 1.0 + (0.008 * trans_count) + (0.01 * sch_count))
+    dist_decay = max(0.40, math.exp(-0.025 * dist_to_hub))
+    connectivity_boost = min(1.08, 1.0 + (0.003 * trans_count) + (0.005 * sch_count))
     effective_sqft_price = base_rate * dist_decay * connectivity_boost
     
     type_mult = PROPERTY_TYPE_MULTIPLIER.get(prop_type, 1.0)
     furn_mult = FURNISHING_MULTIPLIER.get(furn_type, 1.0)
-    age_depr = max(0.70, 1.0 - (age * 0.01))
+    age_depr = max(0.65, 1.0 - (age * 0.012))
 
     total_price = (sqft * effective_sqft_price * type_mult * furn_mult * age_depr)
-    return max(300000, total_price)
+    return max(200000, total_price)
 
 
 def predict_market_rent(bhk, bath, age, tier, furn_type, trans_count, sch_count):
-    base_rent = 8000 if tier == 1 else (4500 if tier == 2 else 2800)
+    # Tier-based baseline setup
+    if tier == 1:
+        base_rent = 6000
+        bhk_rate = 2500
+    elif tier == 2:
+        base_rent = 3500
+        bhk_rate = 1500
+    else:  # Tier 3 / Small Towns
+        base_rent = 1800
+        bhk_rate = 1000
+
     furn_add = FURNISHING_RENT_ADD.get(furn_type, 0)
-    monthly_rent = (base_rent + (bhk * 3000) + (bath * 1000) + furn_add - (age * 80) + (trans_count * 150) + (sch_count * 100))
-    return max(2000, int(monthly_rent))
+    
+    # Strictly controlled rental calculation
+    monthly_rent = (
+        base_rent + 
+        (bhk * bhk_rate) + 
+        (bath * 400) + 
+        furn_add - 
+        (age * 50) + 
+        min(600, trans_count * 50) + 
+        min(500, sch_count * 50)
+    )
+    
+    return max(1500, int(monthly_rent))
 
 
 def get_circle_points(lat, lng, radius_meters=750, num_points=64):
@@ -450,8 +471,8 @@ if location_input.strip():
             col1, col2 = st.columns(2)
 
             with col1:
-                bedrooms = st.slider("Bedrooms (BHK)", min_value=1, max_value=6, value=2)
-                bathrooms = st.slider("Bathrooms", min_value=1, max_value=5, value=2)
+                bedrooms = st.slider("Bedrooms (BHK)", min_value=1, max_value=6, value=1)
+                bathrooms = st.slider("Bathrooms", min_value=1, max_value=5, value=1)
                 furnishing = st.selectbox("Furnishing", list(FURNISHING_RENT_ADD.keys()))
             with col2:
                 age = st.slider("Property Age (Years)", min_value=0, max_value=30, value=5)
