@@ -1,4 +1,5 @@
 import math
+import requests
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -45,12 +46,32 @@ CITY_HUBS = {
     "Jaipur": {"lat": 26.9124, "lng": 75.7873, "base_rate": 6000, "tier": 2},
 }
 
+# Multipliers for buy price based on property type / furnishing
+PROPERTY_TYPE_MULTIPLIER = {
+    "Apartment": 1.00,
+    "Independent House": 1.12,
+    "Villa": 1.35,
+    "Plot (Land only)": 0.65,
+}
+
+FURNISHING_MULTIPLIER = {
+    "Unfurnished": 1.00,
+    "Semi-Furnished": 1.05,
+    "Fully Furnished": 1.12,
+}
+
+FURNISHING_RENT_ADD = {
+    "Unfurnished": 0,
+    "Semi-Furnished": 2000,
+    "Fully Furnished": 5000,
+}
+
 
 def calculate_distance_km(lat1, lon1, lat2, lon2):
     R = 6371.0
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
-    a = (math.sin(dlat / 2) ** 2 + 
+    a = (math.sin(dlat / 2) ** 2 +
          math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2)
     return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
 
@@ -92,7 +113,7 @@ def get_circle_points(lat, lng, radius_meters=750, num_points=64):
         angle = 2 * math.pi * i / num_points
         dy = radius_meters * math.sin(angle)
         dx = radius_meters * math.cos(angle)
-        
+
         point_lat = lat + (dy / 111000.0)
         point_lng = lng + (dx / (111000.0 * math.cos(lat_rad)))
         points.append([point_lat, point_lng])
@@ -105,6 +126,69 @@ def get_geolocator():
     return ArcGIS(timeout=10)
 
 geolocator = get_geolocator()
+
+
+# --- Real amenity data via OpenStreetMap Overpass API (free, no key required) ---
+OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def get_nearby_amenities(lat, lng, radius_meters=750):
+    """
+    Queries OSM Overpass for real nearby transport stops/stations and
+    schools/colleges within radius_meters. Falls back to a deterministic
+    pseudo-random estimate if the API is unreachable or times out, so the
+    app still works offline / behind restrictive networks.
+    """
+    query = f"""
+    [out:json][timeout:15];
+    (
+      node["highway"="bus_stop"](around:{radius_meters},{lat},{lng});
+      node["railway"~"station|halt|tram_stop"](around:{radius_meters},{lat},{lng});
+      node["public_transport"](around:{radius_meters},{lat},{lng});
+    );
+    out count;
+    >;
+    (
+      node["amenity"="school"](around:{radius_meters},{lat},{lng});
+      node["amenity"="college"](around:{radius_meters},{lat},{lng});
+      way["amenity"="school"](around:{radius_meters},{lat},{lng});
+    );
+    out count;
+    """
+    try:
+        resp = requests.post(OVERPASS_URL, data={"data": query}, timeout=12)
+        resp.raise_for_status()
+        data = resp.json()
+
+        transport_count = 0
+        school_count = 0
+        seen_transport = False
+
+        for el in data.get("elements", []):
+            if el.get("type") == "count":
+                tags = el.get("tags", {})
+                total = int(tags.get("total", 0))
+                if not seen_transport:
+                    transport_count = total
+                    seen_transport = True
+                else:
+                    school_count = total
+
+        return {
+            "public_transport_count": transport_count,
+            "school_count": school_count,
+            "source": "live",
+        }
+    except Exception:
+        # Deterministic fallback so the UI never breaks
+        public_transport_count = int(abs(hash(f"{lat:.2f},{lng:.2f}")) % 5) + 2
+        school_count = int(abs(hash(f"{lat:.3f},{lng:.3f}")) % 5) + 2
+        return {
+            "public_transport_count": public_transport_count,
+            "school_count": school_count,
+            "source": "estimated",
+        }
 
 
 # 3. Location Validation Function
@@ -122,40 +206,50 @@ def get_location_data(address):
 
     try:
         location = geolocator.geocode(query, out_fields="*")
-        
+
         if location and location.latitude and location.longitude:
             raw_data = getattr(location, 'raw', {})
             attributes = raw_data.get('attributes', {}) or raw_data.get('feature', {}).get('attributes', {})
-            
+
             score = attributes.get('Score', 100)
             addr_type = attributes.get('Addr_type', '') or attributes.get('Type', '')
 
             forbidden_types = [
-                'StreetNameGroup', 
-                'POI', 
-                'Intersection', 
-                'Transit', 
+                'StreetNameGroup',
+                'POI',
+                'Intersection',
+                'Transit',
                 'Bus Stop'
             ]
-            
+
             if score < 70 or addr_type in forbidden_types:
                 return None
 
             lat, lng = location.latitude, location.longitude
-            public_transport_count = int(abs(hash(f"{lat:.2f},{lng:.2f}")) % 5) + 2
-            school_count = int(abs(hash(f"{lat:.3f},{lng:.3f}")) % 5) + 2
+            amenities = get_nearby_amenities(lat, lng, radius_meters=750)
 
             return {
                 "lat": lat,
                 "lng": lng,
                 "address": location.address,
-                "public_transport_count": public_transport_count,
-                "school_count": school_count,
+                "public_transport_count": amenities["public_transport_count"],
+                "school_count": amenities["school_count"],
+                "amenity_source": amenities["source"],
             }
     except Exception:
         pass
 
     return None
+
+
+def calculate_emi(principal, annual_rate_pct, tenure_years):
+    """Standard reducing-balance EMI formula."""
+    monthly_rate = (annual_rate_pct / 100) / 12
+    n_months = tenure_years * 12
+    if monthly_rate == 0:
+        return principal / n_months
+    emi = principal * monthly_rate * (1 + monthly_rate) ** n_months / ((1 + monthly_rate) ** n_months - 1)
+    return emi
 
 
 # Session State Management
@@ -172,7 +266,7 @@ with search_container:
         c_input, c_btn = st.columns([3, 1], gap="small")
         with c_input:
             location_input = st.text_input(
-                "Property Location", 
+                "Property Location",
                 placeholder="City, Locality, or Pincode...",
                 label_visibility="collapsed"
             )
@@ -183,7 +277,7 @@ spatial_data = None
 
 if location_input.strip():
     spatial_data = get_location_data(location_input)
-    
+
     if spatial_data:
         # Green border & background styling for valid location
         st.markdown(
@@ -205,9 +299,16 @@ if location_input.strip():
         base_rate_est, market_label, loc_tier = estimate_location_details(
             spatial_data['lat'], spatial_data['lng']
         )
-        
+
         # Display Location Box & Satellite Map Side-by-Side
         loc_col, map_col = st.columns([1, 1])
+
+        short_address = spatial_data['address'].split(',')[0]
+
+        amenity_note = (
+            "" if spatial_data["amenity_source"] == "live"
+            else " <span style='font-size:0.75em;opacity:0.7;'>(estimated — live data unavailable)</span>"
+        )
 
         with loc_col:
             st.markdown(
@@ -215,10 +316,10 @@ if location_input.strip():
                 <div style="background-color: #d4edda; color: #155724; padding: 16px; border-radius: 8px; border: 1px solid #c3e6cb; margin-bottom: 15px;">
                     ✅ <strong>{spatial_data['address']}</strong><br><br>
                     📍 <strong>Classification:</strong> Tier {loc_tier} ({market_label})<br>
-                    🚌 <strong>Nearby Transport Locations:</strong> {spatial_data['public_transport_count']}<br>
-                    🏫 <strong>Nearby Schools:</strong> {spatial_data['school_count']}
+                    🚌 <strong>Nearby Transport Locations (750m):</strong> {spatial_data['public_transport_count']}{amenity_note}<br>
+                    🏫 <strong>Nearby Schools/Colleges (750m):</strong> {spatial_data['school_count']}{amenity_note}
                 </div>
-                """, 
+                """,
                 unsafe_allow_html=True
             )
 
@@ -246,7 +347,7 @@ if location_input.strip():
                 fill=True,
                 fill_color="#111111",
                 fill_opacity=0.6,
-                tooltip=None
+                tooltip="Outside Area"
             ).add_to(m)
 
             # Green boundary outline for searched area
@@ -255,30 +356,36 @@ if location_input.strip():
                 color="#28a745",
                 weight=3,
                 opacity=0.9,
-                tooltip=None
+                tooltip=spatial_data['address']
             ).add_to(m)
 
-            # Add Transport Location Markers (Blue Bus Icons) - NO POPUP / NO TOOLTIP
+            # Add Transport Location Markers (Blue Bus Icons) - WITHOUT POPUPS
             for i in range(spatial_data['public_transport_count']):
                 angle = (i * 137.5) * (math.pi / 180)
                 dist = 180 + ((i * 123) % 450)
                 d_lat = (dist * math.sin(angle)) / 111000.0
                 d_lng = (dist * math.cos(angle)) / (111000.0 * math.cos(math.radians(lat)))
 
+                place_title = f"Transport Hub #{i+1}"
+
                 folium.Marker(
                     [lat + d_lat, lng + d_lng],
+                    tooltip=place_title,
                     icon=folium.Icon(color="blue", icon="bus", prefix="fa")
                 ).add_to(m)
 
-            # Add School Markers (Orange Graduation Cap Icons) - NO POPUP / NO TOOLTIP
+            # Add School Markers (Orange Graduation Cap Icons) - WITHOUT POPUPS
             for i in range(spatial_data['school_count']):
                 angle = (i * 211.3 + 60) * (math.pi / 180)
                 dist = 220 + ((i * 97) % 420)
                 d_lat = (dist * math.sin(angle)) / 111000.0
                 d_lng = (dist * math.cos(angle)) / (111000.0 * math.cos(math.radians(lat)))
 
+                place_title = f"School/College #{i+1}"
+
                 folium.Marker(
                     [lat + d_lat, lng + d_lng],
+                    tooltip=place_title,
                     icon=folium.Icon(color="orange", icon="graduation-cap", prefix="fa")
                 ).add_to(m)
 
@@ -305,11 +412,16 @@ if location_input.strip():
             with col1:
                 sqft = st.slider("Square Feet", min_value=500, max_value=5000, value=1200, step=50)
                 bedrooms = st.slider("Bedrooms (BHK)", min_value=1, max_value=6, value=2)
+                property_type = st.selectbox("Property Type", list(PROPERTY_TYPE_MULTIPLIER.keys()))
             with col2:
                 bathrooms = st.slider("Bathrooms", min_value=1, max_value=5, value=2)
                 age = st.slider("Property Age (Years)", min_value=0, max_value=30, value=5)
+                furnishing = st.selectbox("Furnishing", list(FURNISHING_MULTIPLIER.keys()))
 
             if st.button("Predict Buying Price", type="primary"):
+                type_mult = PROPERTY_TYPE_MULTIPLIER[property_type]
+                furnish_mult = FURNISHING_MULTIPLIER[furnishing]
+
                 total_price = (
                     (sqft * base_rate_est)
                     + (bedrooms * 250000)
@@ -317,14 +429,63 @@ if location_input.strip():
                     - (age * (base_rate_est * 4))
                     + (spatial_data['public_transport_count'] * 80000)
                     + (spatial_data['school_count'] * 100000)
+                ) * type_mult * furnish_mult
+
+                total_price = max(500000, total_price)
+
+                # Present as a range rather than false precision
+                low_price = total_price * 0.90
+                high_price = total_price * 1.10
+
+                def fmt_inr(v):
+                    return f"₹{v/10000000:.2f} Cr" if v >= 10000000 else f"₹{v/100000:.2f} Lakhs"
+
+                st.success(
+                    f"### Estimated Purchase Price: **{fmt_inr(low_price)} – {fmt_inr(high_price)}**\n"
+                    f"(midpoint: {fmt_inr(total_price)})"
                 )
 
-                if total_price >= 10000000:
-                    formatted_price = f"₹{total_price:,.2f} ({total_price/10000000:.2f} Cr)"
-                else:
-                    formatted_price = f"₹{total_price:,.2f} ({total_price/100000:.2f} Lakhs)"
+                st.session_state["last_buy_price"] = total_price
 
-                st.success(f"### Estimated Property Purchase Price: **{formatted_price}**")
+            # --- EMI / Rent vs Buy calculator ---
+            if "last_buy_price" in st.session_state:
+                st.markdown("---")
+                st.subheader("4. Loan EMI & Rent-vs-Buy Comparison")
+
+                emi_col1, emi_col2, emi_col3 = st.columns(3)
+                with emi_col1:
+                    down_payment_pct = st.slider("Down Payment (%)", 10, 50, 20)
+                with emi_col2:
+                    interest_rate = st.slider("Home Loan Interest Rate (% p.a.)", 6.0, 12.0, 8.5, step=0.1)
+                with emi_col3:
+                    tenure_years = st.slider("Loan Tenure (Years)", 5, 30, 20)
+
+                purchase_price = st.session_state["last_buy_price"]
+                down_payment_amt = purchase_price * (down_payment_pct / 100)
+                loan_amount = purchase_price - down_payment_amt
+                emi = calculate_emi(loan_amount, interest_rate, tenure_years)
+
+                st.info(
+                    f"💰 **Down Payment:** ₹{down_payment_amt:,.0f}  \n"
+                    f"🏦 **Loan Amount:** ₹{loan_amount:,.0f}  \n"
+                    f"📆 **Monthly EMI:** ₹{emi:,.0f} over {tenure_years} years"
+                )
+
+                # Rough comparable rent for the same tier, using base 2BHK assumption
+                if loc_tier == 1:
+                    comparable_rent = 14000 + (1 * 8500) + (2 * 2500)
+                elif loc_tier == 2:
+                    comparable_rent = 7500 + (1 * 4500) + (2 * 1500)
+                else:
+                    comparable_rent = 4000 + (1 * 2500) + (2 * 1000)
+
+                st.caption(
+                    f"For context, a comparable 2BHK in this area rents for roughly ₹{comparable_rent:,}/month. "
+                    f"Your EMI (₹{emi:,.0f}) is "
+                    f"{'higher' if emi > comparable_rent else 'lower'} than that by "
+                    f"₹{abs(emi - comparable_rent):,.0f}/month — buying tends to pay off over the long run if you "
+                    f"plan to stay well beyond the loan's early years, since a portion of EMI builds equity while rent does not."
+                )
 
         elif st.session_state.user_role == "Rent":
             st.markdown("---")
@@ -334,6 +495,7 @@ if location_input.strip():
             with col1:
                 bedrooms = st.slider("Bedrooms (BHK)", min_value=1, max_value=6, value=2)
                 bathrooms = st.slider("Bathrooms", min_value=1, max_value=5, value=2)
+                furnishing = st.selectbox("Furnishing", list(FURNISHING_RENT_ADD.keys()))
             with col2:
                 age = st.slider("Property Age (Years)", min_value=0, max_value=30, value=5)
 
@@ -361,10 +523,17 @@ if location_input.strip():
                     - (age * age_depreciation)
                     + (spatial_data['public_transport_count'] * 300)
                     + (spatial_data['school_count'] * 300)
+                    + FURNISHING_RENT_ADD[furnishing]
                 )
 
-                formatted_rent = f"₹{max(2500, int(monthly_rent)):,} / month"
-                st.success(f"### Estimated Monthly Rent: **{formatted_rent}**")
+                monthly_rent = max(2500, int(monthly_rent))
+                low_rent = int(monthly_rent * 0.90)
+                high_rent = int(monthly_rent * 1.10)
+
+                st.success(
+                    f"### Estimated Monthly Rent: **₹{low_rent:,} – ₹{high_rent:,} / month**\n"
+                    f"(midpoint: ₹{monthly_rent:,})"
+                )
 
     else:
         # Red border styling for invalid location
